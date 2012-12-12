@@ -28,6 +28,7 @@
 #include "prepare_protocol.h"
 #include "microprotocols.h"
 #include "row.h"
+#include "vfs.h"
 
 #ifdef PYSQLITE_EXPERIMENTAL
 #include "backup.h"
@@ -313,6 +314,7 @@ PyMODINIT_FUNC init_sqlite(void)
     module = Py_InitModule("pysqlite2._sqlite", module_methods);
 
     if (!module ||
+        (pysqlite_vfs_setup() < 0) ||
         (pysqlite_row_setup_types() < 0) ||
         (pysqlite_cursor_setup_types() < 0) ||
         (pysqlite_connection_setup_types() < 0) ||

@@ -39,7 +39,7 @@ PYSQLITE_EXPERIMENTAL = False
 
 sources = ["src/module.c", "src/connection.c", "src/cursor.c", "src/cache.c",
            "src/microprotocols.c", "src/prepare_protocol.c", "src/statement.c",
-           "src/util.c", "src/row.c"]
+           "src/util.c", "src/row.c", "src/vfs.c"]
 
 if PYSQLITE_EXPERIMENTAL:
     sources.append("src/backup.c")

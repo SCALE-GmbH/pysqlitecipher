@@ -37,6 +37,9 @@ typedef struct
     PyObject_HEAD
     sqlite3* db;
 
+    /* SQLite 3 VFS instance specifically created for the database in db. */
+    sqlite3_vfs* db_vfs;
+
     /* 1 if we are currently within a transaction, i. e. if a BEGIN has been
      * issued */
     int inTransaction;

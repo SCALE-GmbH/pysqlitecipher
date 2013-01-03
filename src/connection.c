@@ -287,9 +287,22 @@ void pysqlite_do_all_statements(pysqlite_Connection* self, int action, int reset
     }
 }
 
+PyObject *
+pysqlite_connection_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    PyObject *instance = type->tp_alloc(type, 0);
+    pysqlite_Connection *self = (pysqlite_Connection*) instance;
+    self->in_weakreflist = NULL;
+    return instance;
+}
+
 void pysqlite_connection_dealloc(pysqlite_Connection* self)
 {
     PyObject* ret = NULL;
+
+    if (self->in_weakreflist) {
+        PyObject_ClearWeakRefs((PyObject *) self);
+    }
 
     Py_XDECREF(self->statement_cache);
 
@@ -434,6 +447,8 @@ PyObject* pysqlite_connection_close(pysqlite_Connection* self, PyObject* args)
         } else {
             Py_BEGIN_ALLOW_THREADS
             rc = sqlite3_close(self->db);
+            pysqlite_vfs_destroy(self->db_vfs);
+            self->db_vfs = NULL;
             Py_END_ALLOW_THREADS
 
             if (rc != SQLITE_OK) {
@@ -1703,7 +1718,7 @@ PyTypeObject pysqlite_ConnectionType = {
         0,                                              /* tp_traverse */
         0,                                              /* tp_clear */
         0,                                              /* tp_richcompare */
-        0,                                              /* tp_weaklistoffset */
+        offsetof(pysqlite_Connection, in_weakreflist),  /* tp_weaklistoffset */
         0,                                              /* tp_iter */
         0,                                              /* tp_iternext */
         connection_methods,                             /* tp_methods */
@@ -1716,12 +1731,11 @@ PyTypeObject pysqlite_ConnectionType = {
         0,                                              /* tp_dictoffset */
         (initproc)pysqlite_connection_init,             /* tp_init */
         0,                                              /* tp_alloc */
-        0,                                              /* tp_new */
+        (newfunc)pysqlite_connection_new,               /* tp_new */
         0                                               /* tp_free */
 };
 
 extern int pysqlite_connection_setup_types(void)
 {
-    pysqlite_ConnectionType.tp_new = PyType_GenericNew;
     return PyType_Ready(&pysqlite_ConnectionType);
 }

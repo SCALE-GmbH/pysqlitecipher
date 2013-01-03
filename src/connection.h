@@ -118,6 +118,8 @@ typedef struct
     PyObject* InternalError;
     PyObject* ProgrammingError;
     PyObject* NotSupportedError;
+
+    PyObject* in_weakreflist; /* List of weak references */
 } pysqlite_Connection;
 
 extern PyTypeObject pysqlite_ConnectionType;

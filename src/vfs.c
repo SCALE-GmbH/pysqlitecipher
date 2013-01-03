@@ -1,7 +1,7 @@
+#include "Python.h"
 #include "vfs.h"
 #include "inherit_vfs.h"
 #include "sqlite3.h"
-#include <unistd.h>
 
 
 typedef struct _my_vfs {
@@ -37,33 +37,44 @@ static int wrapped_xLock(sqlite3_file*, int);
 static int wrapped_xUnlock(sqlite3_file*, int);
 
 
-/* Set up a special VFS for Python usage.
-
-   This VFS is used to support better (customized) locking behaviour when
-   SQLite is used from Python. The goal is to coordinate in-process access
-   to one database to avoid expensive operating system calls.
-
-   It is automatically registered as default VFS for now so look out if
-   you are using SQLite from C inside the same process.
-*/
-int pysqlite_vfs_setup(void)
+sqlite3_vfs *pysqlite_vfs_create()
 {
     my_vfs *wrapped_vfs = NULL;
+    char *vfs_name = NULL;
     sqlite3_vfs *root_vfs = sqlite3_vfs_find(NULL);
 
-    if (!root_vfs)
-        return SQLITE_NOTFOUND;
+    if (!root_vfs) {
+        PyErr_SetString(PyExc_RuntimeError, "no default vfs found");
+        return NULL;
+    }
 
     wrapped_vfs = sqlite3_malloc(sizeof(*wrapped_vfs));
-    if (!wrapped_vfs)
-        return SQLITE_NOMEM;
+    if (!wrapped_vfs) {
+        PyErr_NoMemory();
+        return NULL;
+    }
 
-    pysqlite_inherit_vfs(&wrapped_vfs->vfs_head, root_vfs, "pywrapped_vfs");
+    vfs_name = sqlite3_mprintf("%p-pysqlite", (void*) wrapped_vfs);
+    if (!vfs_name) {
+        sqlite3_free(wrapped_vfs);
+        PyErr_NoMemory();
+        return NULL;
+    }
+
+    pysqlite_inherit_vfs(&wrapped_vfs->vfs_head, root_vfs, vfs_name);
 
     wrapped_vfs->orig_xOpen = wrapped_vfs->vfs_head.xOpen;
     wrapped_vfs->vfs_head.xOpen = wrapped_xOpen;
 
-    return sqlite3_vfs_register(&wrapped_vfs->vfs_head, 1);
+    return &wrapped_vfs->vfs_head;
+}
+
+void pysqlite_vfs_destroy(sqlite3_vfs *vfs)
+{
+    if (vfs) {
+        sqlite3_free((char*) vfs->zName);
+        sqlite3_free(vfs);
+    }
 }
 
 

@@ -27,6 +27,7 @@
 #include "statement.h"
 #include "cursor.h"
 #include "prepare_protocol.h"
+#include "vfs.h"
 #include "util.h"
 #include "sqlitecompat.h"
 
@@ -47,6 +48,7 @@
 
 static int pysqlite_connection_set_isolation_level(pysqlite_Connection* self, PyObject* isolation_level);
 static void _pysqlite_drop_unused_cursor_references(pysqlite_Connection* self);
+static int pysqlite_connection_init_vfs(pysqlite_Connection *self);
 
 
 static void _sqlite3_result_error(sqlite3_context* ctx, const char* errmsg, int len)
@@ -109,8 +111,18 @@ int pysqlite_connection_init(pysqlite_Connection* self, PyObject* args, PyObject
             }
         }
 
+        rc = pysqlite_connection_init_vfs(self);
+        if (rc != 0) {
+            return rc;
+        }
+
         Py_BEGIN_ALLOW_THREADS
-        rc = sqlite3_open(PyString_AsString(database_utf8), &self->db);
+        rc = sqlite3_vfs_register(self->db_vfs, 0);
+        if (rc == SQLITE_OK) {
+            rc = sqlite3_open_v2(PyString_AsString(database_utf8), &self->db,
+                    SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, self->db_vfs->zName);
+            sqlite3_vfs_unregister(self->db_vfs);
+        }
         Py_END_ALLOW_THREADS
 
         Py_DECREF(database_utf8);
@@ -215,6 +227,15 @@ int pysqlite_connection_init(pysqlite_Connection* self, PyObject* args, PyObject
     return 0;
 }
 
+
+static int pysqlite_connection_init_vfs(pysqlite_Connection *self)
+{
+    pysqlite_vfs_destroy(self->db_vfs);
+    self->db_vfs = 0;
+    self->db_vfs = pysqlite_vfs_create();
+    return self->db_vfs ? 0 : -1;
+}
+
 /* Empty the entire statement cache of this connection */
 void pysqlite_flush_statement_cache(pysqlite_Connection* self)
 {
@@ -276,6 +297,8 @@ void pysqlite_connection_dealloc(pysqlite_Connection* self)
     if (self->db) {
         Py_BEGIN_ALLOW_THREADS
         sqlite3_close(self->db);
+        pysqlite_vfs_destroy(self->db_vfs);
+        self->db_vfs = NULL;
         Py_END_ALLOW_THREADS
     } else if (self->apsw_connection) {
         ret = PyObject_CallMethod(self->apsw_connection, "close", "");

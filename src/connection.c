@@ -232,7 +232,7 @@ static int pysqlite_connection_init_vfs(pysqlite_Connection *self)
 {
     pysqlite_vfs_destroy(self->db_vfs);
     self->db_vfs = 0;
-    self->db_vfs = pysqlite_vfs_create();
+    self->db_vfs = pysqlite_vfs_create((PyObject*)self);
     return self->db_vfs ? 0 : -1;
 }
 

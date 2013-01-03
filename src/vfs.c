@@ -6,6 +6,10 @@
 
 typedef struct _my_vfs {
     sqlite3_vfs vfs_head;
+
+    /* Connection object handled by this vfs */
+    PyObject *weak_connection;
+
     int (*orig_xOpen)(sqlite3_vfs*, const char*, sqlite3_file*, int, int*);
 } my_vfs;
 
@@ -16,6 +20,9 @@ typedef struct _my_io_methods {
 
     /* PyUnicode of the filename in use */
     PyObject *filename;
+
+    /* Connection object used to access this file (as weak reference) */
+    PyObject *weak_connection;
 
     /* LockManager managing this file */
     PyObject *lock_manager;
@@ -37,28 +44,29 @@ static int wrapped_xLock(sqlite3_file*, int);
 static int wrapped_xUnlock(sqlite3_file*, int);
 
 
-sqlite3_vfs *pysqlite_vfs_create()
+sqlite3_vfs *pysqlite_vfs_create(PyObject *owner)
 {
     my_vfs *wrapped_vfs = NULL;
     char *vfs_name = NULL;
     sqlite3_vfs *root_vfs = sqlite3_vfs_find(NULL);
+    PyObject *weak_connection = NULL;
 
     if (!root_vfs) {
         PyErr_SetString(PyExc_RuntimeError, "no default vfs found");
-        return NULL;
+        goto error_out;
     }
 
     wrapped_vfs = sqlite3_malloc(sizeof(*wrapped_vfs));
     if (!wrapped_vfs) {
         PyErr_NoMemory();
-        return NULL;
+        goto error_out;
     }
+    memset(wrapped_vfs, 0, sizeof(*wrapped_vfs));
 
     vfs_name = sqlite3_mprintf("%p-pysqlite", (void*) wrapped_vfs);
     if (!vfs_name) {
-        sqlite3_free(wrapped_vfs);
         PyErr_NoMemory();
-        return NULL;
+        goto error_out;
     }
 
     pysqlite_inherit_vfs(&wrapped_vfs->vfs_head, root_vfs, vfs_name);
@@ -66,14 +74,28 @@ sqlite3_vfs *pysqlite_vfs_create()
     wrapped_vfs->orig_xOpen = wrapped_vfs->vfs_head.xOpen;
     wrapped_vfs->vfs_head.xOpen = wrapped_xOpen;
 
+    wrapped_vfs->weak_connection = PyWeakref_NewRef(owner, NULL);
+    if (!wrapped_vfs->weak_connection)
+        goto error_out;
+
     return &wrapped_vfs->vfs_head;
+
+error_out:
+    if (wrapped_vfs) {
+        Py_XDECREF(wrapped_vfs->weak_connection);
+    }
+    sqlite3_free(wrapped_vfs);
+    sqlite3_free(vfs_name);
+    return NULL;
 }
 
 void pysqlite_vfs_destroy(sqlite3_vfs *vfs)
 {
-    if (vfs) {
-        sqlite3_free((char*) vfs->zName);
-        sqlite3_free(vfs);
+    my_vfs *self = (my_vfs *) vfs;
+    if (self) {
+        Py_XDECREF(self->weak_connection);
+        sqlite3_free((char*) self->vfs_head.zName);
+        sqlite3_free(self);
     }
 }
 
@@ -135,6 +157,9 @@ static int wrapped_xOpen(
         goto error_out;
     }
 
+    Py_INCREF(self->weak_connection);
+    methods->weak_connection = self->weak_connection;
+
     methods->orig_xClose = file->pMethods->xClose;
     methods->io_methods_head.xClose = wrapped_xClose;
     methods->orig_xLock = file->pMethods->xLock;
@@ -147,6 +172,7 @@ static int wrapped_xOpen(
     return rc;
 
 error_out:
+    Py_XDECREF(methods->weak_connection);
     Py_XDECREF(methods->lock_manager);
     Py_XDECREF(methods->filename);
     PyGILState_Release(gstate);
@@ -173,6 +199,7 @@ static int wrapped_xClose(sqlite3_file *file)
 
     gstate = PyGILState_Ensure();
 
+    Py_XDECREF(methods->weak_connection);
     Py_XDECREF(methods->lock_manager);
     Py_XDECREF(methods->filename);
     sqlite3_free(methods);
@@ -192,11 +219,13 @@ static int wrapped_xLock(sqlite3_file *file, int lock_mode)
     int rc = SQLITE_OK;
     my_io_methods *methods = (my_io_methods *) file->pMethods;
     PyObject *result = NULL;
+    PyObject *connection = NULL;
     PyGILState_STATE gstate;
 
     gstate = PyGILState_Ensure();
 
-    result = PyObject_CallMethod(methods->lock_manager, "lock", "Oi", methods->filename, lock_mode);
+    connection = PyWeakref_GetObject(methods->weak_connection);
+    result = PyObject_CallMethod(methods->lock_manager, "lock", "OiO", methods->filename, lock_mode, connection);
     if (!result) {
         PyErr_Clear();
         rc = SQLITE_IOERR_LOCK;
@@ -222,12 +251,14 @@ static int wrapped_xUnlock(sqlite3_file *file, int lock_mode)
     int rc;
     my_io_methods *methods = (my_io_methods *) file->pMethods;
     PyObject *result = NULL;
+    PyObject *connection = NULL;
     PyGILState_STATE gstate;
 
     rc = methods->orig_xUnlock(file, lock_mode);
     if (rc == SQLITE_OK) {
         gstate = PyGILState_Ensure();
-        result = PyObject_CallMethod(methods->lock_manager, "unlock", "Oi", methods->filename, lock_mode);
+        connection = PyWeakref_GetObject(methods->weak_connection);
+        result = PyObject_CallMethod(methods->lock_manager, "unlock", "OiO", methods->filename, lock_mode, connection);
         if (!result) {
             PyErr_Clear();
             rc = SQLITE_IOERR_UNLOCK;

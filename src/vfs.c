@@ -27,6 +27,9 @@ typedef struct _my_io_methods {
     /* LockManager managing this file */
     PyObject *lock_manager;
 
+    /* Exception type for deadlock detected by lock manager. */
+    PyObject *lock_manager_DeadlockError;
+
     /* Pointers to original methods which we override. */
     int (*orig_xClose)(sqlite3_file*);
     int (*orig_xLock)(sqlite3_file*, int);
@@ -36,7 +39,7 @@ typedef struct _my_io_methods {
 
 /* Forward declarations */
 
-static PyObject *lookup_lock_manager(void);
+static int lookup_lock_manager(my_io_methods *methods);
 
 static int wrapped_xOpen(sqlite3_vfs*, const char *zName, sqlite3_file*, int flags, int *pOutFlags);
 static int wrapped_xClose(sqlite3_file*);
@@ -159,12 +162,9 @@ static int wrapped_xOpen(
         goto error_out;
     }
 
-    methods->lock_manager = lookup_lock_manager();
-    if (!methods->lock_manager) {
-        PyErr_Clear();
-        rc = SQLITE_ERROR;
+    rc = lookup_lock_manager(methods);
+    if (rc != SQLITE_OK)
         goto error_out;
-    }
 
     Py_INCREF(self->weak_connection);
     methods->weak_connection = self->weak_connection;
@@ -183,6 +183,7 @@ static int wrapped_xOpen(
 error_out:
     Py_XDECREF(methods->weak_connection);
     Py_XDECREF(methods->lock_manager);
+    Py_XDECREF(methods->lock_manager_DeadlockError);
     Py_XDECREF(methods->filename);
     PyGILState_Release(gstate);
     return rc;
@@ -236,8 +237,13 @@ static int wrapped_xLock(sqlite3_file *file, int lock_mode)
     connection = PyWeakref_GetObject(methods->weak_connection);
     result = PyObject_CallMethod(methods->lock_manager, "lock", "OiO", methods->filename, lock_mode, connection);
     if (!result) {
-        PyErr_Clear();
-        rc = SQLITE_IOERR_LOCK;
+        if (PyErr_ExceptionMatches(methods->lock_manager_DeadlockError)) {
+            PyErr_Clear();
+            rc = SQLITE_BUSY;
+        } else {
+            PyErr_Print();
+            rc = SQLITE_IOERR_LOCK;
+        }
     }
     Py_XDECREF(result);
 
@@ -269,7 +275,7 @@ static int wrapped_xUnlock(sqlite3_file *file, int lock_mode)
         connection = PyWeakref_GetObject(methods->weak_connection);
         result = PyObject_CallMethod(methods->lock_manager, "unlock", "OiO", methods->filename, lock_mode, connection);
         if (!result) {
-            PyErr_Clear();
+            PyErr_Print();
             rc = SQLITE_IOERR_UNLOCK;
         }
         Py_DECREF(result);
@@ -279,15 +285,31 @@ static int wrapped_xUnlock(sqlite3_file *file, int lock_mode)
     return rc;
 }
 
-static PyObject *lookup_lock_manager()
+static int lookup_lock_manager(my_io_methods *methods)
 {
-    PyObject *module, *lock_manager;
+    PyObject *module = NULL, *p = NULL;
 
     module = PyImport_ImportModuleNoBlock("pysqlite2.lock_manager");
     if (!module)
-        return NULL;
+        goto error_out;
 
-    lock_manager = PyObject_GetAttrString(module, "_lock_manager");
+    p = methods->lock_manager = PyObject_GetAttrString(module, "_lock_manager");
+    if (!p)
+        goto error_out;
+    p = methods->lock_manager_DeadlockError = PyObject_GetAttrString(module, "DeadlockError");
+    if (!p)
+        goto error_out;
+
     Py_DECREF(module);
-    return lock_manager;
+    return SQLITE_OK;
+
+error_out:
+    PyErr_Print();
+
+    Py_XDECREF(module);
+    Py_XDECREF(methods->lock_manager);
+    methods->lock_manager = NULL;
+    Py_XDECREF(methods->lock_manager_DeadlockError);
+    methods->lock_manager_DeadlockError = NULL;
+    return SQLITE_ERROR;
 }

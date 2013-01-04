@@ -112,22 +112,19 @@ int pysqlite_connection_init(pysqlite_Connection* self, PyObject* args, PyObject
         }
 
         rc = pysqlite_connection_init_vfs(self);
-        if (rc != 0) {
-            return rc;
-        }
+        if (rc != 0)
+            return -1;
 
         Py_BEGIN_ALLOW_THREADS
-        rc = sqlite3_vfs_register(self->db_vfs, 0);
-        if (rc == SQLITE_OK) {
-            rc = sqlite3_open_v2(PyString_AsString(database_utf8), &self->db,
-                    SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, self->db_vfs->zName);
-            sqlite3_vfs_unregister(self->db_vfs);
-        }
+        rc = sqlite3_open_v2(PyString_AsString(database_utf8), &self->db,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, self->db_vfs->zName);
         Py_END_ALLOW_THREADS
 
         Py_DECREF(database_utf8);
 
         if (rc != SQLITE_OK) {
+            pysqlite_vfs_destroy(self->db_vfs);
+            self->db_vfs = 0;
             _pysqlite_seterror(self->db, NULL);
             return -1;
         }

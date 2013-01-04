@@ -50,6 +50,7 @@ sqlite3_vfs *pysqlite_vfs_create(PyObject *owner)
     char *vfs_name = NULL;
     sqlite3_vfs *root_vfs = sqlite3_vfs_find(NULL);
     PyObject *weak_connection = NULL;
+    int rc;
 
     if (!root_vfs) {
         PyErr_SetString(PyExc_RuntimeError, "no default vfs found");
@@ -78,6 +79,12 @@ sqlite3_vfs *pysqlite_vfs_create(PyObject *owner)
     if (!wrapped_vfs->weak_connection)
         goto error_out;
 
+    rc = sqlite3_vfs_register(&wrapped_vfs->vfs_head, 0);
+    if (rc != SQLITE_OK) {
+        PyErr_SetString(PyExc_RuntimeError, "Can not register VFS for connection.");
+        goto error_out;
+    }
+
     return &wrapped_vfs->vfs_head;
 
 error_out:
@@ -91,8 +98,10 @@ error_out:
 
 void pysqlite_vfs_destroy(sqlite3_vfs *vfs)
 {
-    my_vfs *self = (my_vfs *) vfs;
-    if (self) {
+    if (vfs) {
+        my_vfs *self = (my_vfs *) vfs;
+
+        sqlite3_vfs_unregister(vfs);
         Py_XDECREF(self->weak_connection);
         sqlite3_free((char*) self->vfs_head.zName);
         sqlite3_free(self);

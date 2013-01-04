@@ -234,7 +234,7 @@ static int wrapped_xLock(sqlite3_file *file, int lock_mode)
 
     gstate = PyGILState_Ensure();
 
-    connection = PyWeakref_GetObject(methods->weak_connection);
+    connection = methods->weak_connection;
     result = PyObject_CallMethod(methods->lock_manager, "lock", "OiO", methods->filename, lock_mode, connection);
     if (!result) {
         if (PyErr_ExceptionMatches(methods->lock_manager_DeadlockError)) {
@@ -272,7 +272,7 @@ static int wrapped_xUnlock(sqlite3_file *file, int lock_mode)
     rc = methods->orig_xUnlock(file, lock_mode);
     if (rc == SQLITE_OK) {
         gstate = PyGILState_Ensure();
-        connection = PyWeakref_GetObject(methods->weak_connection);
+        connection = methods->weak_connection;
         result = PyObject_CallMethod(methods->lock_manager, "unlock", "OiO", methods->filename, lock_mode, connection);
         if (!result) {
             PyErr_Print();

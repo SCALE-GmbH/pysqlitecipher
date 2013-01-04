@@ -52,7 +52,6 @@ sqlite3_vfs *pysqlite_vfs_create(PyObject *owner)
     my_vfs *wrapped_vfs = NULL;
     char *vfs_name = NULL;
     sqlite3_vfs *root_vfs = sqlite3_vfs_find(NULL);
-    PyObject *weak_connection = NULL;
     int rc;
 
     if (!root_vfs) {
@@ -278,7 +277,7 @@ static int wrapped_xUnlock(sqlite3_file *file, int lock_mode)
             PyErr_Print();
             rc = SQLITE_IOERR_UNLOCK;
         }
-        Py_DECREF(result);
+        Py_XDECREF(result);
         PyGILState_Release(gstate);
     }
 

@@ -49,6 +49,7 @@
 static int pysqlite_connection_set_isolation_level(pysqlite_Connection* self, PyObject* isolation_level);
 static void _pysqlite_drop_unused_cursor_references(pysqlite_Connection* self);
 static int pysqlite_connection_init_vfs(pysqlite_Connection *self);
+static int pysqlite_connection_cleanup_vfs(pysqlite_Connection *self);
 
 
 static void _sqlite3_result_error(sqlite3_context* ctx, const char* errmsg, int len)
@@ -123,8 +124,7 @@ int pysqlite_connection_init(pysqlite_Connection* self, PyObject* args, PyObject
         Py_DECREF(database_utf8);
 
         if (rc != SQLITE_OK) {
-            pysqlite_vfs_destroy(self->db_vfs);
-            self->db_vfs = 0;
+            pysqlite_connection_cleanup_vfs(self);
             _pysqlite_seterror(self->db, NULL);
             return -1;
         }
@@ -224,13 +224,24 @@ int pysqlite_connection_init(pysqlite_Connection* self, PyObject* args, PyObject
     return 0;
 }
 
-
+/* Initializes the associated VFS implementation for the connection instance
+   in self. This drops any VFS previously created for the same connection.
+   Returns -1 on failure, 0 on success. The actual error information is
+   set as a Python exception. */
 static int pysqlite_connection_init_vfs(pysqlite_Connection *self)
+{
+    pysqlite_connection_cleanup_vfs(self);
+    self->db_vfs = pysqlite_vfs_create((PyObject*)self);
+    return self->db_vfs ? 0 : -1;
+}
+
+/* Destroys the VFS implementation associated with the connection in self.
+   This should only be called after the real database connection was
+   dropped. */
+static int pysqlite_connection_cleanup_vfs(pysqlite_Connection *self)
 {
     pysqlite_vfs_destroy(self->db_vfs);
     self->db_vfs = 0;
-    self->db_vfs = pysqlite_vfs_create((PyObject*)self);
-    return self->db_vfs ? 0 : -1;
 }
 
 /* Empty the entire statement cache of this connection */
@@ -307,9 +318,8 @@ void pysqlite_connection_dealloc(pysqlite_Connection* self)
     if (self->db) {
         Py_BEGIN_ALLOW_THREADS
         sqlite3_close(self->db);
-        pysqlite_vfs_destroy(self->db_vfs);
-        self->db_vfs = NULL;
         Py_END_ALLOW_THREADS
+        pysqlite_connection_cleanup_vfs(self);
     } else if (self->apsw_connection) {
         ret = PyObject_CallMethod(self->apsw_connection, "close", "");
         Py_XDECREF(ret);
@@ -444,9 +454,8 @@ PyObject* pysqlite_connection_close(pysqlite_Connection* self, PyObject* args)
         } else {
             Py_BEGIN_ALLOW_THREADS
             rc = sqlite3_close(self->db);
-            pysqlite_vfs_destroy(self->db_vfs);
-            self->db_vfs = NULL;
             Py_END_ALLOW_THREADS
+            pysqlite_connection_cleanup_vfs(self);
 
             if (rc != SQLITE_OK) {
                 _pysqlite_seterror(self->db, NULL);

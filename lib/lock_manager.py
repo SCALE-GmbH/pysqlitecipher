@@ -22,6 +22,12 @@ assert LOCK_NONE < LOCK_SHARED < LOCK_RESERVED < LOCK_PENDING < LOCK_EXCLUSIVE
 
 
 class DeadlockError(Exception):
+    """
+    Should only be thrown by a LockManager implementation. This exception
+    is caught in the C module and translated to SQLITE_BUSY to tell the caller
+    that the lock can not be acquired. It should never get through to the
+    client code using the DB-API.
+    """
     pass
 
 
@@ -36,20 +42,89 @@ class LockManager(object):
         the pending level is never requested directly, it is managed internally
         by the OS layer.
 
-        :param filename: Absolute name of the file that is addressed.
+        :param filename (unicode): Absolute name of the file that is addressed.
         :param level (int): Requested locking level
+        :param client: Some object usable as key to differentiate between
+                connections to the same database.
         """
 
     def unlock(self, filename, level, client):
         """
+        Called after the database file was unlocked on the underlying OS level.
+        Should wake up the first client blocked in lock() that waits on the same
+        file.
+
+        :param filename (unicode): Absolute name of the file that is addressed.
+        :param level (int): New locking level (lower or same to the level of the
+                matching lock call by the same client).
+        :param client: Connection key.
         """
 
 
 class DefaultLockManager(LockManager):
 
     def __init__(self):
-        #: Mutex used to implement the monitor pattern of the manager.
+        #: Protects the lock manager and its contained SharedExclusiveLocks
         self._mutex = threading.RLock()
+
+        #: Individual lock for each filename, as mapping name -> lock
+        self._filelocks = {}
+
+    def lock(self, filename, level, client):
+        with self._mutex:
+            filelock = self._filelocks.get(filename)
+            if not filelock:
+                filelock = SharedExclusiveLock(mutex=self._mutex)
+                self._filelocks[filename] = filelock
+            try:
+                return filelock.lock(level, client)
+            finally:
+                if filelock.is_idle():
+                    self._filelocks.pop(filename)
+
+    def unlock(self, filename, level, client):
+        with self._mutex:
+            filelock = self._filelocks.get(filename)
+            if not filelock:
+                filelock = SharedExclusiveLock(mutex=self._mutex)
+                self._filelocks[filename] = filelock
+            try:
+                return filelock.unlock(level, client)
+            finally:
+                if filelock.is_idle():
+                    self._filelocks.pop(filename)
+
+    def is_idle(self):
+        with self._mutex:
+            return not self._filelocks
+
+    def __repr__(self):
+        with self._mutex:
+            level_counts = {}
+            blocked_count = 0
+
+            for filename, filelock in self._filelocks.iteritems():
+                file_level_counts, file_blocked_count = filelock.get_stats()
+                for level, count in file_level_counts.items():
+                    level_counts[level] = level_counts.get(level, 0) + count
+                blocked_count += file_blocked_count
+
+        if level_counts:
+            holder_parts = []
+            for level, count in sorted(level_counts.items()):
+                holder_parts.append("{0}: {1}".format(LEVEL_NAMES.get(level) or level, count))
+            holder_summary = ", ".join(holder_parts)
+        else:
+            holder_summary = "IDLE"
+
+        return '<{0} {1}, {2} blocked>'.format(type(self).__name__, holder_summary, blocked_count)
+
+
+class SharedExclusiveLock(object):
+
+    def __init__(self, mutex=None):
+        #: Mutex used to implement the monitor pattern of the lock.
+        self._mutex = threading.RLock() if mutex is None else mutex
 
         #: Map of clients to the lock level they are holding. Contains only
         #: clients actually holding a lock.
@@ -61,12 +136,8 @@ class DefaultLockManager(LockManager):
 
         self.check_invariant()
 
-    def lock(self, filename, level, client):
-        if not filename:
-            return
+    def lock(self, level, client):
         with self._mutex:
-            print "xLock(%r, %s, %r)" % (filename, level, client)
-
             # A call to lock must increase the lock level of the client
             assert level > self._lock_holders.get(client, LOCK_NONE)
 
@@ -79,21 +150,25 @@ class DefaultLockManager(LockManager):
             self._blocked_clients.append(blocked_info)
             self._update_state()
 
-        try:
-            blocked_info.wait()
-        except:
-            print "Status:", repr(self)
-            print "Vars:", vars(self)
-            raise
+            try:
+                blocked_info.wait()
+            except:
+                if blocked_info.got_timeout():
+                    for pos in range(len(self._blocked_clients)):
+                        if self._blocked_clients[pos] is blocked_info:
+                            del self._blocked_clients[pos]
+                            break
+                    else:
+                        print "timeout entry not found"
 
-        with self._mutex:
+                print "Status:", repr(self)
+                print "Vars:", vars(self)
+                raise
+
             assert self._lock_holders[client] == level
 
-    def unlock(self, filename, level, client):
-        if not filename:
-            return
+    def unlock(self, level, client):
         with self._mutex:
-            print "xUnlock(%r, %s, %r)" % (filename, level, client)
             if client not in self._lock_holders and level == LOCK_NONE:
                 return
 
@@ -153,6 +228,10 @@ class DefaultLockManager(LockManager):
                             # We hold a reserved lock already. Wait for shared locks to be released.
                             self._lock_holders[blocked_info.client] = LOCK_PENDING
                             done = True
+                    elif max_level > LOCK_SHARED:
+                        # Another lock is already at reserved or higher. We have to wait for
+                        # that client to unlock.
+                        done = True
                     else:
                         self._lock_holders[blocked_info.client] = LOCK_PENDING
                         done = True
@@ -167,12 +246,17 @@ class DefaultLockManager(LockManager):
         with self._mutex:
             return not self._lock_holders and not self._blocked_clients
 
-    def __repr__(self):
+    def get_stats(self):
         with self._mutex:
             level_counts = {}
             for level in self._lock_holders.values():
                 level_counts[level] = level_counts.get(level, 0) + 1
             blocked_count = len(self._blocked_clients)
+
+        return level_counts, blocked_count
+
+    def __repr__(self):
+        level_counts, blocked_count = self.get_stats()
 
         if level_counts:
             holder_parts = []
@@ -210,20 +294,28 @@ class BlockedClientInfo(object):
     def __init__(self, client, level, mutex):
         self.client = client
         self.level = level
-        self._event = threading.Event()
+        self._condition = threading.Condition(mutex)
+        self._got_lock = False
+        self._timed_out = False
 
     def wait(self):
-        self._event.wait(2)
-        if not self._event.is_set():
-            print "timeout"
-            raise Exception("internal error, timeout")
+        if not self._got_lock:
+            self._condition.wait(30)
+            if not self._got_lock:
+                self._timed_out = True
+                print "timeout"
+                raise Exception("internal error, timeout")
 
     def signal(self):
-        self._event.set()
+        self._got_lock = True
+        self._condition.notify()
+
+    def got_timeout(self):
+        return self._timed_out
 
     def __repr__(self):
         return '<BlockedClientInfo {0!r} {1} {2}>'.format(self.client, LEVEL_NAMES[self.level],
-                "notified" if self._event.is_set() else "blocked")
+                "notified" if self._got_lock else "blocked")
 
 
 _lock_manager = DefaultLockManager()

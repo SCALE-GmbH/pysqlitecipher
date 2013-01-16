@@ -133,7 +133,10 @@ static int wrapped_xOpen(
     /* Call the original open method */
 
     rc = self->orig_xOpen(vfs, zName, file, flags, pOutFlags);
-    if (!file->pMethods)
+
+
+    /* Do not interfere if there was an error or if this wasn't the main database file. */
+    if (!file->pMethods || (flags & SQLITE_OPEN_MAIN_DB) == 0)
         return rc;
 
     methods = sqlite3_malloc(sizeof(*methods));

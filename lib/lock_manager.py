@@ -21,6 +21,16 @@ LEVEL_NAMES = {
 assert LOCK_NONE < LOCK_SHARED < LOCK_RESERVED < LOCK_PENDING < LOCK_EXCLUSIVE
 
 
+def _ascend_level(old_level, new_level):
+    r = []
+    for level in (1, 2, 4):
+        if level > new_level:
+            break
+        if level > old_level:
+            r.append(level)
+    return r
+
+
 class DeadlockError(Exception):
     """
     Should only be thrown by a LockManager implementation. This exception
@@ -33,7 +43,7 @@ class DeadlockError(Exception):
 
 class LockManager(object):
 
-    def lock(self, filename, level, client):
+    def lock(self, lockfunc, filename, level, client):
         """
         Called before OS level locking of a database file. This should ensure
         fairness between clients of the same file. level is the desired locking
@@ -89,21 +99,33 @@ class DefaultLockManager(LockManager):
         #: How long to wait to get a lock in seconds (None: block forever)
         self.timeout = timeout
 
-    def lock(self, filename, level, client):
-        print repr(("lock", filename, level, client))
+    def lock(self, lockfunc, filename, level, client):
+        # print repr(("lock", lockfunc, filename, level, client))
         with self._mutex:
             filelock = self._filelocks.get(filename)
             if not filelock:
                 filelock = SharedExclusiveLock(mutex=self._mutex, timeout=self.timeout)
                 self._filelocks[filename] = filelock
             try:
-                return filelock.lock(level, client)
+                old_level = filelock.lock(level, client)
             finally:
                 if filelock.is_idle():
                     self._filelocks.pop(filename, None)
 
+        try:
+            levels = _ascend_level(old_level, level)
+            if len(levels) > 1:
+                print "{0}: raising lockfunc levels {1}".format(client, levels)
+            for l in levels:
+                lockfunc(l)
+            self.lock_result(filename, level, client, 0)
+        except Exception, e:
+            print "lockfunc raised {0}: {1}.".format(type(e).__name__, repr(e.args))
+            self.lock_result(filename, level, client, e.message)
+            raise
+
     def lock_result(self, filename, level, client, resultcode):
-        print repr(("lock_result", filename, level, client, resultcode))
+        # print repr(("lock_result", filename, level, client, resultcode))
         with self._mutex:
             filelock = self._filelocks.get(filename)
             if not filelock:
@@ -116,7 +138,7 @@ class DefaultLockManager(LockManager):
                     self._filelocks.pop(filename, None)
 
     def unlock(self, filename, level, client):
-        print repr(("unlock", filename, level, client))
+        # print repr(("unlock", filename, level, client))
         with self._mutex:
             filelock = self._filelocks.get(filename)
             if not filelock:
@@ -180,7 +202,7 @@ class SharedExclusiveLock(object):
         with self._mutex:
             old_level = self._lock_holders.get(client, LOCK_NONE)
             if level <= old_level:
-                return
+                return old_level
 
             if level > LOCK_SHARED and old_level == LOCK_SHARED:
                 max_level = max(self._lock_holders.values())
@@ -212,6 +234,8 @@ class SharedExclusiveLock(object):
                 raise DeadlockError("timeout")
 
             assert self._lock_holders[client] == level
+
+        return old_level
 
     def lock_result(self, level, client, resultcode):
         with self._mutex:

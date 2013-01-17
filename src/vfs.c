@@ -4,6 +4,8 @@
 #include "sqlite3.h"
 #include "connection.h"
 
+static PyObject* pysqlite_CallbackError = NULL;
+
 
 typedef struct _my_vfs {
     sqlite3_vfs vfs_head;
@@ -47,6 +49,8 @@ static int wrapped_xClose(sqlite3_file*);
 static int wrapped_xLock(sqlite3_file*, int);
 static int wrapped_xUnlock(sqlite3_file*, int);
 
+static PyObject *create_orig_xLock_py(sqlite3_file *file);
+static PyObject *orig_xLock_trampoline(PyObject *self, PyObject *args);
 
 sqlite3_vfs *pysqlite_vfs_create(PyObject *owner)
 {
@@ -234,45 +238,99 @@ static int wrapped_xLock(sqlite3_file *file, int lock_mode)
     PyObject *result = NULL;
     PyObject *connection = NULL;
     pysqlite_Connection *real_conn = NULL;
+    PyObject *orig_xLock_py = NULL;
     PyGILState_STATE gstate;
 
     gstate = PyGILState_Ensure();
 
+    /* Get the minimum lock level from the connection object. */
+
     connection = methods->weak_connection;
     real_conn = (pysqlite_Connection *) PyWeakref_GetObject(connection);
+    Py_XINCREF(real_conn);
+    if (!real_conn)
+        goto error_out;
     if (real_conn->minimum_lock_level > lock_mode)
         lock_mode = real_conn->minimum_lock_level;
 
-    result = PyObject_CallMethod(methods->lock_manager, "lock", "OiO", methods->filename, lock_mode, connection);
-    if (!result) {
+    orig_xLock_py = create_orig_xLock_py(file);
+    if (!orig_xLock_py)
+        goto error_out;
+
+    result = PyObject_CallMethod(methods->lock_manager, "lock", "OOiO",
+            orig_xLock_py, methods->filename, lock_mode, connection);
+
+error_out:
+    if (PyErr_Occurred()) {
         if (PyErr_ExceptionMatches(methods->lock_manager_DeadlockError)) {
             PyErr_Clear();
             rc = SQLITE_BUSY;
+        } else if (PyErr_ExceptionMatches(pysqlite_CallbackError)) {
+            PyObject *etype, *evalue, *etb;
+            PyErr_Fetch(&etype, &evalue, &etb);
+            PyObject *message = PyObject_GetAttrString(evalue, "message");
+            if (PyInt_Check(message)) {
+                rc = PyInt_AsLong(message);
+            } else {
+                rc = SQLITE_IOERR_LOCK;
+            }
+            Py_XDECREF(message);
+            Py_XDECREF(etype);
+            Py_XDECREF(evalue);
+            Py_XDECREF(etb);
         } else {
             PyErr_Print();
             rc = SQLITE_IOERR_LOCK;
         }
     }
     Py_XDECREF(result);
+    Py_XDECREF((PyObject*) real_conn);
+    Py_XDECREF(orig_xLock_py);
 
     PyGILState_Release(gstate);
-
-    if (rc == SQLITE_OK) {
-        rc = methods->orig_xLock(file, lock_mode);
-
-        gstate = PyGILState_Ensure();
-
-        result = PyObject_CallMethod(methods->lock_manager, "lock_result", "OiOi",
-                methods->filename, lock_mode, connection, rc);
-        if (!result)
-            PyErr_Print();
-        Py_XDECREF(result);
-
-        PyGILState_Release(gstate);
-    }
     return rc;
 }
 
+static PyObject *create_orig_xLock_py(sqlite3_file *file)
+{
+    PyObject *vfs_file = NULL, *result = NULL;
+
+    static PyMethodDef methoddef = {
+        "xLock", orig_xLock_trampoline, METH_VARARGS, "Original VFS xLock method."
+    };
+
+    vfs_file = PyCObject_FromVoidPtr(file, NULL);
+    if (!vfs_file)
+        return NULL;
+    result = PyCFunction_New(&methoddef, vfs_file);
+    Py_DECREF(vfs_file);
+    return result;
+}
+
+static PyObject *orig_xLock_trampoline(PyObject *self, PyObject *args)
+{
+    sqlite3_file *file = PyCObject_AsVoidPtr(self);
+    my_io_methods *methods = (my_io_methods *) file->pMethods;
+    int rc;
+    int lock_mode = 0;
+
+    if (!PyArg_ParseTuple(args, "i", &lock_mode))
+        return NULL;
+
+    Py_BEGIN_ALLOW_THREADS
+    rc = methods->orig_xLock(file, lock_mode);
+    Py_END_ALLOW_THREADS
+
+    if (rc == SQLITE_OK) {
+        Py_RETURN_NONE;
+    }
+    else {
+        PyObject *exc = PyObject_CallFunction(pysqlite_CallbackError, "i", rc);
+        if (exc)
+            PyErr_SetObject(pysqlite_CallbackError, exc);
+        return NULL;
+    }
+}
 
 /* Wrapper for xUnlock of the original VFS.
 
@@ -331,4 +389,11 @@ error_out:
     Py_XDECREF(methods->lock_manager_DeadlockError);
     methods->lock_manager_DeadlockError = NULL;
     return SQLITE_ERROR;
+}
+
+
+int pysqlite_vfs_setup_types()
+{
+    pysqlite_CallbackError = PyErr_NewException("pysqlite2.CallbackError", PyExc_Exception, NULL);
+    return pysqlite_CallbackError ? 0 : -1;
 }

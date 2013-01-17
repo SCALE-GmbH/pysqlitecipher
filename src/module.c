@@ -319,6 +319,7 @@ PyMODINIT_FUNC init_sqlite(void)
         (pysqlite_connection_setup_types() < 0) ||
         (pysqlite_cache_setup_types() < 0) ||
         (pysqlite_statement_setup_types() < 0) ||
+        (pysqlite_vfs_setup_types() < 0) ||
         #ifdef PYSQLITE_EXPERIMENTAL
         (pysqlite_backup_setup_types() < 0) ||
         #endif

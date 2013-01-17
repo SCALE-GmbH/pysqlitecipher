@@ -2,6 +2,7 @@
 #include "vfs.h"
 #include "inherit_vfs.h"
 #include "sqlite3.h"
+#include "connection.h"
 
 
 typedef struct _my_vfs {
@@ -232,11 +233,16 @@ static int wrapped_xLock(sqlite3_file *file, int lock_mode)
     my_io_methods *methods = (my_io_methods *) file->pMethods;
     PyObject *result = NULL;
     PyObject *connection = NULL;
+    pysqlite_Connection *real_conn = NULL;
     PyGILState_STATE gstate;
 
     gstate = PyGILState_Ensure();
 
     connection = methods->weak_connection;
+    real_conn = (pysqlite_Connection *) PyWeakref_GetObject(connection);
+    if (real_conn->minimum_lock_level > lock_mode)
+        lock_mode = real_conn->minimum_lock_level;
+
     result = PyObject_CallMethod(methods->lock_manager, "lock", "OiO", methods->filename, lock_mode, connection);
     if (!result) {
         if (PyErr_ExceptionMatches(methods->lock_manager_DeadlockError)) {
@@ -251,8 +257,19 @@ static int wrapped_xLock(sqlite3_file *file, int lock_mode)
 
     PyGILState_Release(gstate);
 
-    if (rc == SQLITE_OK)
+    if (rc == SQLITE_OK) {
         rc = methods->orig_xLock(file, lock_mode);
+
+        gstate = PyGILState_Ensure();
+
+        result = PyObject_CallMethod(methods->lock_manager, "lock_result", "OiOi",
+                methods->filename, lock_mode, connection, rc);
+        if (!result)
+            PyErr_Print();
+        Py_XDECREF(result);
+
+        PyGILState_Release(gstate);
+    }
     return rc;
 }
 

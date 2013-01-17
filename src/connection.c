@@ -232,6 +232,7 @@ static int pysqlite_connection_init_vfs(pysqlite_Connection *self)
 {
     pysqlite_connection_cleanup_vfs(self);
     self->db_vfs = pysqlite_vfs_create((PyObject*)self);
+    self->minimum_lock_level = 0;
     return self->db_vfs ? 0 : -1;
 }
 
@@ -242,6 +243,7 @@ static int pysqlite_connection_cleanup_vfs(pysqlite_Connection *self)
 {
     pysqlite_vfs_destroy(self->db_vfs);
     self->db_vfs = 0;
+    return 0;
 }
 
 /* Empty the entire statement cache of this connection */
@@ -1696,6 +1698,7 @@ static struct PyMemberDef connection_members[] =
     {"NotSupportedError", T_OBJECT, offsetof(pysqlite_Connection, NotSupportedError), RO},
     {"row_factory", T_OBJECT, offsetof(pysqlite_Connection, row_factory)},
     {"text_factory", T_OBJECT, offsetof(pysqlite_Connection, text_factory)},
+    {"minimum_lock_level", T_INT, offsetof(pysqlite_Connection, minimum_lock_level)},
     {NULL}
 };
 

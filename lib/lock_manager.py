@@ -42,9 +42,32 @@ class DeadlockError(Exception):
 
 
 class LockManager(object):
+    """
+    Coordinates locking of SQLite database files.
+
+    Plain SQLite does not ensure fairness when accessing database files. Each
+    client tries to get a database lock by non-blocking lock attempts. This
+    leads to starvation if one client continuously writes to the database,
+    as other clients have only a small chance of getting a lock on the
+    database file.
+
+    When using PySQLite, a connection can have a lock manager associated which
+    coordinates locking of the database. The lock manager can ensure fairness
+    or give priority access to specific clients. It still has to use the
+    original locking mechanism as a base to ensure protection against database
+    corruption, especially when accessing the database from multiple unrelated
+    processes.
+
+    """
 
     def lock(self, lockfunc, filename, level, client):
         """
+        Lock the database file given in *filename* to the locking level given
+        in *level* for use by *client*. The parameter *lockfunc* represents
+        the original locking function of the underlying SQLite VFS. After
+        checking for conflicts, *lockfunc* must be called for all locking
+        levels from the current level up to the requested locking level.
+
         Called before OS level locking of a database file. This should ensure
         fairness between clients of the same file. level is the desired locking
         level (see http://www.sqlite.org/c3ref/c_lock_exclusive.html for known
@@ -114,8 +137,6 @@ class DefaultLockManager(LockManager):
 
         try:
             levels = _ascend_level(old_level, level)
-            if len(levels) > 1:
-                print "{0}: raising lockfunc levels {1}".format(client, levels)
             for l in levels:
                 lockfunc(l)
             self.lock_result(filename, level, client, 0)

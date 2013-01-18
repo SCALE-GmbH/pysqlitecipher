@@ -254,7 +254,7 @@ static int wrapped_xLock(sqlite3_file *file, int lock_mode)
         rc = methods->orig_xLock(file, lock_mode);
 
         /* If orig_xLock returned an error, this means that the lock manager
-           is buggy. Better inform the user in some way. Note that all locking
+           is buggy. Better inform the user in some way. Not all locking
            problems are detected here, as xLock may just lock the file. There
            is no API in the SQLite VFS to assert the current lock level. */
 

@@ -52,6 +52,10 @@ static int wrapped_xUnlock(sqlite3_file*, int);
 static PyObject *create_orig_xLock_py(sqlite3_file *file);
 static PyObject *orig_xLock_trampoline(PyObject *self, PyObject *args);
 
+static int lockmanager_xLock(sqlite3_file *file, int lock_mode);
+static void lockmanager_warn_buggy_lock(sqlite3_file *file);
+
+
 sqlite3_vfs *pysqlite_vfs_create(PyObject *owner)
 {
     my_vfs *wrapped_vfs = NULL;
@@ -233,6 +237,42 @@ static int wrapped_xClose(sqlite3_file *file)
 */
 static int wrapped_xLock(sqlite3_file *file, int lock_mode)
 {
+    int rc = lockmanager_xLock(file, lock_mode);
+
+    if (rc == SQLITE_OK) {
+        /* At this point, the database file should have been locked by the
+           lock manager via the underlying VFS locking function. However, any
+           bug inside the lock manager that breaks this requirement will lead
+           to database corruption. As a special precaution, we therefore call
+           the original VFS xLock method again to catch this case.
+
+           This does not have any effect if the lock manager is implemented
+           correctly, but if it isn't this will be either fixed here or
+           flagged as an error. */
+
+        my_io_methods *methods = (my_io_methods *) file->pMethods;
+        rc = methods->orig_xLock(file, lock_mode);
+
+        /* If orig_xLock returned an error, this means that the lock manager
+           is buggy. Better inform the user in some way. Note that all locking
+           problems are detected here, as xLock may just lock the file. There
+           is no API in the SQLite VFS to assert the current lock level. */
+
+        if (rc != SQLITE_OK) {
+            lockmanager_warn_buggy_lock(file);
+            rc = SQLITE_INTERNAL;
+        }
+    }
+    return rc;
+}
+
+
+/*
+   Calls the lock method of the registered lockmanager for our connection.
+   Returns the sqlite error code if anything goes wrong.
+*/
+static int lockmanager_xLock(sqlite3_file *file, int lock_mode)
+{
     int rc = SQLITE_OK;
     my_io_methods *methods = (my_io_methods *) file->pMethods;
     PyObject *result = NULL;
@@ -291,6 +331,31 @@ error_out:
     return rc;
 }
 
+static void lockmanager_warn_buggy_lock(sqlite3_file *file)
+{
+    PyGILState_STATE gstate;
+    my_io_methods *methods = (my_io_methods *) file->pMethods;
+    PyObject *filename_bytes = NULL;
+    const char *filename = "<filename unavailable>";
+
+    gstate = PyGILState_Ensure();
+
+    filename_bytes = PyUnicode_AsUTF8String(methods->filename);
+    if (filename_bytes)
+        filename = PyString_AsString(filename_bytes);
+
+    PySys_WriteStderr(
+            "pysqlite2: Buggy lock manager: failed to lock file '%s'.\n",
+            filename);
+    Py_XDECREF(filename_bytes);
+    PyGILState_Release(gstate);
+}
+
+
+/*
+   Creates a python callable (as PyObject) that forwards calls to the
+   original xLock function for the given sqlite3_file in *file*.
+*/
 static PyObject *create_orig_xLock_py(sqlite3_file *file)
 {
     PyObject *vfs_file = NULL, *result = NULL;

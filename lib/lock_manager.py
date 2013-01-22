@@ -141,7 +141,7 @@ class DefaultLockManager(LockManager):
                 lockfunc(l)
             self.lock_result(filename, level, client, 0)
         except Exception, e:
-            print "lockfunc raised {0}: {1}.".format(type(e).__name__, repr(e.args))
+            # print "lockfunc raised {0}: {1}.".format(type(e).__name__, repr(e.args))
             self.lock_result(filename, level, client, e.message)
             raise
 
@@ -228,8 +228,8 @@ class SharedExclusiveLock(object):
             if level > LOCK_SHARED and old_level == LOCK_SHARED:
                 max_level = max(self._lock_holders.values())
                 if max_level > LOCK_SHARED:
-                    print "got deadlock"
-                    print repr(vars(self))
+                    # print "got deadlock"
+                    # print repr(vars(self))
                     raise DeadlockError()
 
             blocked_info = BlockedClientInfo(client, level, self._mutex, self.timeout)
@@ -245,8 +245,8 @@ class SharedExclusiveLock(object):
                 blocked_info.wait()
                 self._previous_level[client] = old_level
             except _LockTimeoutError:
-                print "got timeout"
-                print repr(vars(self))
+                # print "got timeout"
+                # print repr(vars(self))
                 if blocked_info.got_timeout():
                     for pos in range(len(self._blocked_clients)):
                         if self._blocked_clients[pos] is blocked_info:

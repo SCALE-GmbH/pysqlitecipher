@@ -30,29 +30,35 @@ from pysqlite2.lock_manager import DefaultLockManager, DeadlockError, \
 
 
 class LockManagerTests(unittest.TestCase):
+
     def setUp(self):
         self.manager = DefaultLockManager()
+        self.lockfunc = lambda x: None
 
     def tearDown(self):
         self.manager = None
 
+    def _print(self, fmt, *args):
+        # print fmt % args
+        pass
+
     def CheckSharedLocks(self):
         """Check that we can acquire many shared locks concurrently."""
         for client in range(10):
-            self.manager.lock("filename", LOCK_SHARED, client)
-        print self.manager
+            self.manager.lock(self.lockfunc, "filename", LOCK_SHARED, client)
+        self._print(self.manager)
         for client in range(10):
             self.manager.unlock("filename", LOCK_NONE, client)
-        print self.manager
+        self._print(self.manager)
         self.assertTrue(self.manager.is_idle())
 
     def CheckDetectDeadlock(self):
         """Checks that shared can not be raised to a higher level if a reserved lock exists."""
-        self.manager.lock("filename", LOCK_RESERVED, "first")
+        self.manager.lock(self.lockfunc, "filename", LOCK_RESERVED, "first")
 
-        self.manager.lock("filename", LOCK_SHARED, "second")
-        self.assertRaises(DeadlockError, self.manager.lock, "filename", LOCK_RESERVED, "second")
-        self.assertRaises(DeadlockError, self.manager.lock, "filename", LOCK_EXCLUSIVE, "second")
+        self.manager.lock(self.lockfunc, "filename", LOCK_SHARED, "second")
+        self.assertRaises(DeadlockError, self.manager.lock, self.lockfunc, "filename", LOCK_RESERVED, "second")
+        self.assertRaises(DeadlockError, self.manager.lock, self.lockfunc, "filename", LOCK_EXCLUSIVE, "second")
 
     def CheckUnlockWithoutLock(self):
         """Checks that unlock without first locking is harmless (SQLite seems to do it sometimes)."""
@@ -60,9 +66,9 @@ class LockManagerTests(unittest.TestCase):
 
     def CheckRaiseLower(self):
         """Checks that the lock level can go up and down all the way."""
-        self.manager.lock("filename", LOCK_SHARED, "client")
-        self.manager.lock("filename", LOCK_RESERVED, "client")
-        self.manager.lock("filename", LOCK_EXCLUSIVE, "client")
+        self.manager.lock(self.lockfunc, "filename", LOCK_SHARED, "client")
+        self.manager.lock(self.lockfunc, "filename", LOCK_RESERVED, "client")
+        self.manager.lock(self.lockfunc, "filename", LOCK_EXCLUSIVE, "client")
         self.manager.unlock("filename", LOCK_RESERVED, "client")
         self.manager.unlock("filename", LOCK_SHARED, "client")
         self.manager.unlock("filename", LOCK_NONE, "client")
@@ -70,65 +76,65 @@ class LockManagerTests(unittest.TestCase):
 
     def CheckExclusiveBlocksShared(self):
         """Check that a shared lock must wait while an exclusive lock is set."""
-        self.manager.lock("filename", LOCK_EXCLUSIVE, "exclusive")
+        self.manager.lock(self.lockfunc, "filename", LOCK_EXCLUSIVE, "exclusive")
 
         def shared_locker():
-            self.manager.lock("filename", LOCK_SHARED, "shared")
+            self.manager.lock(self.lockfunc, "filename", LOCK_SHARED, "shared")
         t = threading.Thread(target=shared_locker)
         t.start()
         t.join(0.1)
-        print self.manager
+        self._print(self.manager)
         self.assertTrue(t.is_alive())
 
         self.manager.unlock("filename", LOCK_NONE, "exclusive")
         t.join()
-        print self.manager
+        self._print(self.manager)
         self.assertFalse(self.manager.is_idle())
 
     def CheckPendingBlocksShared(self):
         """Check that a pending lock blocks further shared locks."""
-        self.manager.lock("filename", LOCK_SHARED, "shared_1")
-        self.manager.lock("filename", LOCK_SHARED, "shared_2")
+        self.manager.lock(self.lockfunc, "filename", LOCK_SHARED, "shared_1")
+        self.manager.lock(self.lockfunc, "filename", LOCK_SHARED, "shared_2")
 
         def exclusive_locker():
-            self.manager.lock("filename", LOCK_EXCLUSIVE, "exclusive")
+            self.manager.lock(self.lockfunc, "filename", LOCK_EXCLUSIVE, "exclusive")
 
         def shared_locker():
-            self.manager.lock("filename", LOCK_SHARED, "shared_blocked")
+            self.manager.lock(self.lockfunc, "filename", LOCK_SHARED, "shared_blocked")
 
 
-        print "An exclusive lock will block now (going to PENDING first)"
+        self._print("An exclusive lock will block now (going to PENDING first)")
         t_exclusive = threading.Thread(target=exclusive_locker)
         t_exclusive.start()
         t_exclusive.join(0.1)
-        print self.manager
+        self._print(self.manager)
         self.assertTrue(t_exclusive.is_alive())
-        self.assertEqual(self.manager._lock_holders["exclusive"], LOCK_PENDING)
+        self.assertEqual(self.manager._filelocks["filename"]._lock_holders["exclusive"], LOCK_PENDING)
 
-        print "A shared lock will be added to the end of the queue"
+        self._print("A shared lock will be added to the end of the queue")
         t_shared = threading.Thread(target=shared_locker)
         t_shared.start()
         t_shared.join(0.1)
-        print self.manager
+        self._print(self.manager)
         self.assertTrue(t_shared.is_alive())
-        self.assertTrue("shared_blocked" not in self.manager._lock_holders)
+        self.assertTrue("shared_blocked" not in self.manager._filelocks["filename"]._lock_holders)
 
-        print "Unblocking the exclusive locker"
+        self._print("Unblocking the exclusive locker")
         self.manager.unlock("filename", LOCK_NONE, "shared_1")
         self.manager.unlock("filename", LOCK_NONE, "shared_2")
         t_exclusive.join()
-        print self.manager
+        self._print(self.manager)
 
         # Shared lock must still be blocked
         t_shared.join(0.1)
         self.assertTrue(t_shared.is_alive())
-        self.assertTrue("shared_blocked" not in self.manager._lock_holders)
+        self.assertTrue("shared_blocked" not in self.manager._filelocks["filename"]._lock_holders)
 
-        print "Unblocking the shared locker"
+        self._print("Unblocking the shared locker")
         self.manager.unlock("filename", LOCK_NONE, "exclusive")
         t_shared.join()
 
-        print self.manager
+        self._print(self.manager)
         self.assertFalse(self.manager.is_idle())
         self.manager.unlock("filename", LOCK_NONE, "shared_blocked")
         self.assertTrue(self.manager.is_idle())

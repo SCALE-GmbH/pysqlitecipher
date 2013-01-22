@@ -143,19 +143,36 @@ static int wrapped_xOpen(
 
     rc = self->orig_xOpen(vfs, zName, file, flags, pOutFlags);
 
-
     /* Do not interfere if there was an error or if this wasn't the main database file. */
     if (!file->pMethods || (flags & SQLITE_OPEN_MAIN_DB) == 0)
         return rc;
+
+    /* If the original open succeeded, initialize our data. */
+
+    gstate = PyGILState_Ensure();
 
     methods = sqlite3_malloc(sizeof(*methods));
     if (!methods)
         return SQLITE_NOMEM;
     memset(methods, 0, sizeof(*methods));
 
-    /* If the original open succeeded, initialize our data. */
+    rc = lookup_lock_manager(methods);
+    if (rc != SQLITE_OK)
+        goto error_out;
 
-    gstate = PyGILState_Ensure();
+    /* Special case: If lock_manager is None, we disable any special code and
+       fall back to the original file. */
+
+    if (methods->lock_manager == Py_None) {
+        Py_DECREF(methods->lock_manager);
+        methods->lock_manager = NULL;
+        Py_DECREF(methods->lock_manager_DeadlockError);
+        methods->lock_manager_DeadlockError = NULL;
+        sqlite3_free(methods);
+
+        PyGILState_Release(gstate);
+        return rc;
+    }
 
     rc = pysqlite_inherit_io_methods(&methods->io_methods_head, file->pMethods);
     if (rc != SQLITE_OK)
@@ -172,10 +189,6 @@ static int wrapped_xOpen(
         rc = SQLITE_NOMEM;
         goto error_out;
     }
-
-    rc = lookup_lock_manager(methods);
-    if (rc != SQLITE_OK)
-        goto error_out;
 
     Py_INCREF(self->weak_connection);
     methods->weak_connection = self->weak_connection;

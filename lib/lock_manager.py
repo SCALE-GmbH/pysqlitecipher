@@ -425,4 +425,5 @@ class _LockTimeoutError(Exception):
     """Internal exception class signalling that a lock attempt timed out."""
 
 
-_lock_manager = DefaultLockManager()
+# Disable the lock manager by default - it is opt-in for now.
+_lock_manager = None

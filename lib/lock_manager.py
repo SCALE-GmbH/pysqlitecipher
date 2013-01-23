@@ -111,6 +111,13 @@ class LockManager(object):
 
 
 class DefaultLockManager(LockManager):
+    """
+    A fair lock manager that can be used to coordinate database threads inside
+    a single process.
+
+    Keeps a dictionary of filenames involved in active or pending locks, where
+    each filename is associated its own SharedExclusiveLock instance.
+    """
 
     def __init__(self, timeout=5):
         #: Protects the lock manager and its contained SharedExclusiveLocks
@@ -131,6 +138,8 @@ class DefaultLockManager(LockManager):
                 self._filelocks[filename] = filelock
             try:
                 old_level = filelock.lock(level, client)
+            except _LockTimeoutError:
+                raise DeadlockError()
             finally:
                 if filelock.is_idle():
                     self._filelocks.pop(filename, None)
@@ -142,21 +151,13 @@ class DefaultLockManager(LockManager):
             self.lock_result(filename, level, client, 0)
         except Exception, e:
             # print "lockfunc raised {0}: {1}.".format(type(e).__name__, repr(e.args))
+            self.unlock(filename, old_level, client)
             self.lock_result(filename, level, client, e.message)
             raise
 
     def lock_result(self, filename, level, client, resultcode):
         # print repr(("lock_result", filename, level, client, resultcode))
-        with self._mutex:
-            filelock = self._filelocks.get(filename)
-            if not filelock:
-                filelock = SharedExclusiveLock(mutex=self._mutex, timeout=self.timeout)
-                self._filelocks[filename] = filelock
-            try:
-                return filelock.lock_result(level, client, resultcode)
-            finally:
-                if filelock.is_idle():
-                    self._filelocks.pop(filename, None)
+        pass
 
     def unlock(self, filename, level, client):
         # print repr(("unlock", filename, level, client))
@@ -211,143 +212,164 @@ class SharedExclusiveLock(object):
         #: instance of BlockedClientInfo.
         self._blocked_clients = deque()
 
-        #: Lock level of a client before the last invocation of the lock method.
-        #: Needed for the lock_result method.
-        self._previous_level = {}
-
+        #: Timeout for blocked clients. After waiting this many seconds, a
+        #: busy error is returned.
         self.timeout = timeout
 
         self.check_invariant()
 
     def lock(self, level, client):
+        """
+        Acquires a lock at the *level* for *client*. If the client already
+        holds the lock, its lock level is raised to *level*. This is a no
+        op if the new level is the same or lower than the current level.
+
+        .. note::
+
+            This method will never lower the lock level, even if the new level
+            is smaller than the previous level.
+
+        :param int level: Requested locking level, see LEVEL_NAMES.keys()
+        :param hashable client: Identifier for the client requesting the lock.
+                This can be anything that can be used as key for a dictionary.
+        :returns: the original locking level of the client
+        :rtype: int
+        :raises: DeadlockError if the requested lock level leads to a dead
+                lock with another thread
+        :raises: _LockTimeoutError if the waiting time exceeded the timeout
+        """
         with self._mutex:
             old_level = self._lock_holders.get(client, LOCK_NONE)
-            if level <= old_level:
-                return old_level
+            if level > old_level:
 
-            if level > LOCK_SHARED and old_level == LOCK_SHARED:
-                max_level = max(self._lock_holders.values())
-                if max_level > LOCK_SHARED:
-                    # print "got deadlock"
-                    # print repr(vars(self))
-                    raise DeadlockError()
+                if level == LOCK_SHARED:
+                    return self._acquire_shared(client, old_level)
+                elif level == LOCK_RESERVED:
+                    return self._acquire_reserved(client, old_level)
+                elif level == LOCK_EXCLUSIVE:
+                    return self._acquire_exclusive(client, old_level)
+                else:
+                    raise ValueError(
+                            "Bad lock level {0}, must be LOCK_SHARED ({1}), LOCK_RESERVED ({2}) or LOCK_EXCLUSIVE ({3}))."
+                            .format(level, LOCK_SHARED, LOCK_RESERVED, LOCK_EXCLUSIVE))
 
-            blocked_info = BlockedClientInfo(client, level, self._mutex, self.timeout)
-            # Ein exklusiver Lock muss alle anderen überholen, wenn der Client schon einen
-            # Locklevel reserved hat. Sonst deadlock.
-            if level == LOCK_EXCLUSIVE and old_level == LOCK_RESERVED:
-                self._blocked_clients.appendleft(blocked_info)
-            else:
-                self._blocked_clients.append(blocked_info)
-            self._update_state()
-
-            try:
-                blocked_info.wait()
-                self._previous_level[client] = old_level
-            except _LockTimeoutError:
-                # print "got timeout"
-                # print repr(vars(self))
-                if blocked_info.got_timeout():
-                    for pos in range(len(self._blocked_clients)):
-                        if self._blocked_clients[pos] is blocked_info:
-                            del self._blocked_clients[pos]
-                            break
-                raise DeadlockError("timeout")
-
-            assert self._lock_holders[client] == level
-
-        return old_level
-
-    def lock_result(self, level, client, resultcode):
-        with self._mutex:
-            if resultcode:
-                # error case
-                self.unlock(self._previous_level[client], client)
-            else:
-                self._previous_level.pop(client, None)
+            return old_level
 
     def unlock(self, level, client):
         with self._mutex:
-            self._previous_level.pop(client, None)
-
             old_level = self._lock_holders.get(client, LOCK_NONE)
-            if level == old_level:
-                return
-
-            # Unlock must only be called to decrease the lock level
-            assert level < self._lock_holders.get(client, LOCK_NONE)
-
-            if level == LOCK_NONE:
-                del self._lock_holders[client]
-            else:
-                self._lock_holders[client] = level
-
-            self._update_state()
-
-    def _update_state(self):
-        with self._mutex:
-            done = False
-            iterlimit = 100
-            iterations = 0
-            while self._blocked_clients and not done:
-                iterations += 1
-                if iterations > iterlimit:
-                    raise RuntimeError("internal error in sharedexclusivelock, {0!r}".format(vars(self)))
-                lock_levels = set(self._lock_holders.values())
-                max_level = max(lock_levels) if lock_levels else LOCK_NONE
-
-                blocked_info = self._blocked_clients[0]
-
-                if blocked_info.level == LOCK_SHARED:
-
-                    if max_level <= LOCK_RESERVED:
-                        self._blocked_clients.popleft()
-                        assert blocked_info not in self._lock_holders
-                        self._lock_holders[blocked_info.client] = LOCK_SHARED
-                        blocked_info.signal()
-                    else:
-                        done = True
-
-                elif blocked_info.level == LOCK_RESERVED:
-
-                    if max_level <= LOCK_SHARED:
-                        self._blocked_clients.popleft()
-                        self._lock_holders[blocked_info.client] = LOCK_RESERVED
-                        blocked_info.signal()
-                    else:
-                        done = True
-
-                elif blocked_info.level == LOCK_EXCLUSIVE:
-
-                    client_has_lock = blocked_info.client in self._lock_holders
-
-                    if not self._lock_holders or (client_has_lock and len(self._lock_holders) == 1):
-                        # Nobody holds a lock or the client is the only holder of a lock
-                        self._blocked_clients.popleft()
-                        self._lock_holders[blocked_info.client] = LOCK_EXCLUSIVE
-                        blocked_info.signal()
-                    elif client_has_lock:
-                        # Somebody else must be holding a lock as well.
-                        if self._lock_holders[blocked_info.client] == LOCK_RESERVED or self._lock_holders[blocked_info.client] == LOCK_PENDING:
-                            # We hold a reserved lock already. Wait for shared locks to be released.
-                            self._lock_holders[blocked_info.client] = LOCK_PENDING
-                            done = True
-                    elif max_level > LOCK_SHARED:
-                        # Another lock is already at reserved or higher. We have to wait for
-                        # that client to unlock.
-                        done = True
-                    else:
-                        self._lock_holders[blocked_info.client] = LOCK_PENDING
-                        done = True
-
+            if level < old_level:
+                if level == LOCK_NONE:
+                    del self._lock_holders[client]
                 else:
-                    raise Exception("Invalid requested locking level {0}".format(blocked_info.level))
+                    self._lock_holders[client] = level
+                self._wakeup_blocked()
 
-            self.check_invariant()
+    def _acquire_shared(self, client, old_level):
+        lock_levels = [v for (k, v) in self._lock_holders.items() if k != client]
+        max_level = max(lock_levels) if lock_levels else LOCK_NONE
+
+        if max_level < LOCK_PENDING and not self._blocked_clients:
+            # Fast path: No conflicting lock.
+            self._lock_holders[client] = LOCK_SHARED
+        else:
+            self._wait(client, LOCK_SHARED)
+
+    def _acquire_reserved(self, client, old_level):
+        lock_levels = [v for (k, v) in self._lock_holders.items() if k != client]
+        max_level = max(lock_levels) if lock_levels else LOCK_NONE
+
+        if max_level < LOCK_RESERVED and not self._blocked_clients:
+            # Fast path: No conflicting lock.
+            self._lock_holders[client] = LOCK_RESERVED
+        else:
+            if old_level != LOCK_NONE:
+                raise DeadlockError()
+            self._wait(client, LOCK_RESERVED)
+
+    def _acquire_exclusive(self, client, old_level):
+        lock_levels = [v for (k, v) in self._lock_holders.items() if k != client]
+        max_level = max(lock_levels) if lock_levels else LOCK_NONE
+
+        if max_level == LOCK_NONE:
+            # Fast path: No conflicting lock.
+            self._lock_holders[client] = LOCK_EXCLUSIVE
+        elif max_level == LOCK_SHARED:
+            # Have to wait for shared locks to be released.
+            self._lock_holders[client] = LOCK_PENDING
+            self._wait(client, LOCK_EXCLUSIVE, enqueue_front=True)
+        else:   # max_level >= LOCK_RESERVED
+            # We can not have a reserved or higher lock level if any other client has
+            # a reserved or higher lock level.
+            assert old_level == LOCK_NONE or old_level == LOCK_SHARED
+
+            if old_level == LOCK_NONE:
+                self._lock_holders[client] = LOCK_PENDING
+                self._wait(client, LOCK_EXCLUSIVE)
+            else:
+                raise DeadlockError()
+
+    def _wait(self, client, level, enqueue_front=False):
+        blocked_info = BlockedClientInfo(client, level, self._mutex, self.timeout)
+        if enqueue_front:
+            self._blocked_clients.appendleft(blocked_info)
+        else:
+            self._blocked_clients.append(blocked_info)
+
+        blocked_info.wait()
+        if blocked_info.got_timeout():
+            print "got timeout"
+            print repr(vars(self))
+            for pos in range(len(self._blocked_clients)):
+                if self._blocked_clients[pos] is blocked_info:
+                    del self._blocked_clients[pos]
+                    break
+            raise _LockTimeoutError()
+        assert self._lock_holders[client] == level
+
+    def _wakeup_blocked(self):
+        while self._blocked_clients:
+            blocked_info = self._blocked_clients.popleft()
+            client = blocked_info.client
+            level = blocked_info.level
+            lock_levels = [v for (k, v) in self._lock_holders.items() if k != client]
+            max_level = max(lock_levels) if lock_levels else LOCK_NONE
+
+            if level == LOCK_SHARED:
+                if max_level < LOCK_PENDING:
+                    self._lock_holders[client] = LOCK_SHARED
+                    blocked_info.signal()
+                else:
+                    self._blocked_clients.appendleft(blocked_info)
+                    break
+
+            elif level == LOCK_RESERVED:
+                if max_level < LOCK_RESERVED:
+                    self._lock_holders[client] = LOCK_RESERVED
+                    blocked_info.signal()
+                else:
+                    self._blocked_clients.appendleft(blocked_info)
+                    break
+
+            elif level == LOCK_EXCLUSIVE:
+                if max_level == LOCK_NONE:
+                    self._lock_holders[client] = LOCK_EXCLUSIVE
+                    blocked_info.signal()
+                elif max_level == LOCK_SHARED:
+                    self._lock_holders[client] = LOCK_PENDING
+                    self._blocked_clients.appendleft(blocked_info)
+                    break
+                else:   # max_level >= LOCK_RESERVED
+                    self._blocked_clients.appendleft(blocked_info)
+                    break
+            else:
+                raise Exception("Unexpected lock level in blocked queue: {0}".format(level))
+
+        self.check_invariant()
 
     def is_idle(self):
         with self._mutex:
-            return not self._lock_holders and not self._blocked_clients
+            return not self._lock_holders
 
     def get_stats(self):
         with self._mutex:
@@ -400,21 +422,16 @@ class BlockedClientInfo(object):
         self.timeout = timeout
         self._condition = threading.Condition(mutex)
         self._got_lock = False
-        self._timed_out = False
 
     def wait(self):
-        if not self._got_lock:
-            self._condition.wait(self.timeout)
-            if not self._got_lock:
-                self._timed_out = True
-                raise _LockTimeoutError()
+        self._condition.wait(self.timeout)
 
     def signal(self):
         self._got_lock = True
         self._condition.notify()
 
     def got_timeout(self):
-        return self._timed_out
+        return not self._got_lock
 
     def __repr__(self):
         return '<BlockedClientInfo {0!r} {1} {2}>'.format(self.client, LEVEL_NAMES[self.level],
@@ -423,6 +440,15 @@ class BlockedClientInfo(object):
 
 class _LockTimeoutError(Exception):
     """Internal exception class signalling that a lock attempt timed out."""
+
+
+def get_lock_manager(lock_manager):
+    return _lock_manager
+
+
+def set_lock_manager(lock_manager):
+    global _lock_manager
+    _lock_manager = lock_manager
 
 
 # Disable the lock manager by default - it is opt-in for now.

@@ -46,5 +46,7 @@ def suite():
     return unittest.TestSuite(tuple(tests))
 
 def test():
+    from pysqlite2.lock_manager import DefaultLockManager, set_lock_manager
+    set_lock_manager(DefaultLockManager())
     runner = unittest.TextTestRunner()
     runner.run(suite())

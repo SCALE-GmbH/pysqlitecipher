@@ -24,6 +24,7 @@
 import glob, os, re, sys
 import urllib
 import zipfile
+import subprocess
 
 from distutils.core import setup, Extension, Command
 from distutils.command.build import build
@@ -58,10 +59,39 @@ pysqlite is an interface to the SQLite 3.x embedded relational database engine.
 It is almost fully compliant with the Python database API version 2.0 also
 exposes the unique features of SQLite."""
 
+def check_output(*popenargs, **kwargs):
+    process = subprocess.Popen(stdout=subprocess.PIPE, *popenargs, **kwargs)
+    output, unused_err = process.communicate()
+    retcode = process.poll()
+    if retcode:
+        cmd = kwargs.get("args")
+        if cmd is None:
+            cmd = popenargs[0]
+        raise subprocess.CalledProcessError(retcode, cmd, output=output)
+    return output
+
+
 if sys.platform != "win32":
     define_macros.append(('MODULE_NAME', '"pysqlite2.dbapi2"'))
 else:
     define_macros.append(('MODULE_NAME', '\\"pysqlite2.dbapi2\\"'))
+
+
+# On Unix platforms we can determine the install location of sqlite3 from pkg-config
+
+if sys.platform != "win32":
+    try:
+        pkg_config_output = check_output("pkg-config --cflags --libs sqlite3", shell=True)
+        for token in pkg_config_output.split():
+            if token.startswith("-I"):
+                include_dirs.append(token[2:])
+            elif token.startswith("-l"):
+                libraries.append(token[2:])
+            elif token.startswith("-L"):
+                library_dirs.append(token[2:])
+    except subprocess.CalledProcessError, e:
+        print "Falling back to default paths as calling pkg-config failed:\n  {0}".format(e)
+
 
 class DocBuilder(Command):
     description = "Builds the documentation"

@@ -426,7 +426,19 @@ static int wrapped_xUnlock(sqlite3_file *file, int lock_mode)
 
     rc = methods->orig_xUnlock(file, lock_mode);
     if (rc == SQLITE_OK) {
+        /* This code can be called during exception handling (for example if opening
+           the database fails). In that case, a Python exception can be set. If we
+           call back into Python in that state, we will immediately get back that
+           exception and swallow it in PyErr_Print. Therefore we need to save the
+           Python error state first and restore it after the xUnlock method is done.
+
+           Failing to do so will give us the following exception:
+             SystemError: error return without exception set
+        */
+        PyObject *etype, *evalue, *etraceback;
         gstate = PyGILState_Ensure();
+
+        PyErr_Fetch(&etype, &evalue, &etraceback);
         connection = methods->weak_connection;
         result = PyObject_CallMethod(methods->lock_manager, "unlock", "OiO", methods->filename, lock_mode, connection);
         if (!result) {
@@ -434,6 +446,7 @@ static int wrapped_xUnlock(sqlite3_file *file, int lock_mode)
             rc = SQLITE_IOERR_UNLOCK;
         }
         Py_XDECREF(result);
+        PyErr_Restore(etype, evalue, etraceback);
         PyGILState_Release(gstate);
     }
 

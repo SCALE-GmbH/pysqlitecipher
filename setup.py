@@ -151,7 +151,10 @@ class AmalgamationBuilder(build):
         build.__init__(self, *args, **kwargs)
 
 class MyBuildExt(build_ext):
-    amalgamation = False
+    if sys.platform == "win32":
+        amalgamation = True
+    else:
+        amalgamation = False
 
     def build_extension(self, ext):
         if self.amalgamation:
@@ -160,6 +163,8 @@ class MyBuildExt(build_ext):
             ext.define_macros.append(("SQLITE_ENABLE_RTREE", "1"))   # build with fulltext search enabled
             ext.sources.append(os.path.join(AMALGAMATION_ROOT, "sqlite3.c"))
             ext.include_dirs.append(AMALGAMATION_ROOT)
+        ext.define_macros.append(("THREADSAFE", "1"))
+        ext.define_macros.append(("SQLITE_ENABLE_COLUMN_METADATA", "1"))
         build_ext.build_extension(self, ext)
 
     def __setattr__(self, k, v):

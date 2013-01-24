@@ -320,8 +320,9 @@ error_out:
             rc = SQLITE_BUSY;
         } else if (PyErr_ExceptionMatches(pysqlite_CallbackError)) {
             PyObject *etype, *evalue, *etb;
+            PyObject *message;
             PyErr_Fetch(&etype, &evalue, &etb);
-            PyObject *message = PyObject_GetAttrString(evalue, "message");
+            message = PyObject_GetAttrString(evalue, "message");
             if (PyInt_Check(message)) {
                 rc = PyInt_AsLong(message);
             } else {

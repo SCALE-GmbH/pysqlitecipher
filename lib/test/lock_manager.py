@@ -23,6 +23,7 @@
 
 import unittest
 import threading
+import traceback
 import time
 import pysqlite2.dbapi2 as sqlite
 from pysqlite2.lock_manager import DefaultLockManager, DeadlockError, \
@@ -138,6 +139,40 @@ class LockManagerTests(unittest.TestCase):
         self.assertFalse(self.manager.is_idle())
         self.manager.unlock("filename", LOCK_NONE, "shared_blocked")
         self.assertTrue(self.manager.is_idle())
+
+    def CheckMutualExclusion(self):
+        """Checks that RESERVED or higher locks are mutually exclusive."""
+
+        def locker_thread(clientname):
+            try:
+                for level in lock_sequence:
+                    self.manager.lock(self.lockfunc, "filename", level, clientname)
+                    time.sleep(0.05)
+                active_threads.add(threading.current_thread())
+                # In case the mutual exclusion does not work, this gives other threads
+                # the chance to take over.
+                time.sleep(0.1)
+                concurrent_threads.append(set(active_threads))
+                active_threads.discard(threading.current_thread())
+                self.manager.unlock("filename", LOCK_NONE, clientname)
+            except Exception, e:
+                traceback.print_exc()
+                exceptions.append(e)
+
+        for lock_sequence in [LOCK_RESERVED, LOCK_EXCLUSIVE], [LOCK_RESERVED], [LOCK_EXCLUSIVE]:
+            active_threads = set()
+            concurrent_threads = []
+            exceptions = []
+
+            threads = [threading.Thread(target=locker_thread, args=(name,), name=name)
+                    for name in ("Locker Thread #{0}".format(i) for i in range(5))]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertFalse(exceptions, "Exceptions in threads for lock sequence {0!r}: {1!r}.".format(lock_sequence, exceptions))
+            for entry in concurrent_threads:
+                self.assertTrue(len(entry) == 1, "Concurrent threads detected via lock sequence {0!r}: {1!r}".format(lock_sequence, entry))
 
 
 def suite():

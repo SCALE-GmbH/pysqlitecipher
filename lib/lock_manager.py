@@ -304,7 +304,6 @@ class SharedExclusiveLock(object):
             assert old_level == LOCK_NONE or old_level == LOCK_SHARED
 
             if old_level == LOCK_NONE:
-                self._lock_holders[client] = LOCK_PENDING
                 self._wait(client, LOCK_EXCLUSIVE)
             else:
                 raise DeadlockError()
@@ -405,13 +404,14 @@ class SharedExclusiveLock(object):
             assert not (self._blocked_clients and self._blocked_clients[0].level == LOCK_SHARED) or max_level >= LOCK_PENDING
 
             # At most one client can have lock level > LOCK_SHARED
-            assert len([x for x in lock_levels if x > LOCK_SHARED]) <= 1
+            assert len([holder for (holder, level) in self._lock_holders.items() if level > LOCK_SHARED]) <= 1
 
             # If a client holds an exclusive lock then he is the only lock holder
             assert LOCK_EXCLUSIVE not in lock_levels or len(self._lock_holders) == 1
 
             # A client may only be pending if there are other shared locks to wait for
-            assert LOCK_PENDING not in lock_levels or len(self._lock_holders) > 1
+            assert LOCK_PENDING not in lock_levels or [ \
+                    holder for (holder, level) in self._lock_holders.items() if level == LOCK_SHARED]
 
 
 class BlockedClientInfo(object):

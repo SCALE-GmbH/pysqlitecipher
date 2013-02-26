@@ -48,6 +48,11 @@ PyObject* converters;
 int _enable_callback_tracebacks;
 int pysqlite_BaseTypeAdapted;
 
+/* Python log function if set, else NULL. Only needed to keep the reference count correct
+   when overriding the log function. */
+static PyObject* pysqlite_log_function;
+
+
 static PyObject* module_connect(PyObject* self, PyObject* args, PyObject*
         kwargs)
 {
@@ -236,6 +241,79 @@ static void converters_init(PyObject* dict)
     PyDict_SetItemString(dict, "converters", converters);
 }
 
+PyDoc_STRVAR(module_config_doc,
+"config(option[, value])\n\
+\n\
+Enable the SQLite option given in *option* or set the value of the option\n\
+to *value* if the option takes a parameter.\n\
+\n\
+Option must be given as a string. See\n\
+http://www.sqlite.org/c3ref/c_config_covering_index_scan.html\n\
+for option names.");
+
+static void pysqlite_log_trampoline(void *pyfunc, int code, const char *message)
+{
+    PyGILState_STATE gstate;
+    PyObject *etype, *evalue, *etraceback;
+    PyObject *result = NULL;
+
+    gstate = PyGILState_Ensure();
+    PyErr_Fetch(&etype, &evalue, &etraceback);
+
+    result = PyObject_CallFunction(pyfunc, "is", code, message);
+    if (!result) {
+        PyErr_Print();
+    }
+    Py_XDECREF(result);
+    PyErr_Restore(etype, evalue, etraceback);
+    PyGILState_Release(gstate);
+}
+
+static PyObject* module_config(PyObject* self, PyObject* args)
+{
+    int rc = SQLITE_OK;
+    const char *option_name = NULL;
+    PyObject *option_value = NULL;
+
+    if (!PyArg_ParseTuple(args, "s|O", &option_name, &option_value)) {
+        return NULL;
+    }
+
+    if (strcmp(option_name, "SQLITE_CONFIG_LOG") == 0) {
+        if (!option_value)
+            return PyErr_Format(PyExc_ValueError,
+                    "SQLite option %s requires a value.", option_name);
+
+        if (option_value != Py_None)
+        {
+            /* Set a new logging handler */
+            rc = sqlite3_config(SQLITE_CONFIG_LOG, pysqlite_log_trampoline, option_value);
+        } else
+        {
+            /* Drop old logging handler */
+            option_value = NULL;
+            rc = sqlite3_config(SQLITE_CONFIG_LOG, NULL, NULL);
+        }
+
+        if (rc == SQLITE_OK) {
+            Py_XDECREF(pysqlite_log_function);
+            pysqlite_log_function = option_value;
+            Py_XINCREF(option_value);
+        }
+    } else {
+        return PyErr_Format(PyExc_ValueError, "Unsupported SQLite option %s.", option_name);
+    }
+
+    if (rc != SQLITE_OK) {
+        return PyErr_Format(pysqlite_InternalError, "Setting option %s failed: %s",
+                option_name, sqlite3_errstr(rc));
+    }
+
+    Py_RETURN_NONE;
+}
+
+
+
 static PyMethodDef module_methods[] = {
     {"connect",  (PyCFunction)module_connect,
      METH_VARARGS | METH_KEYWORDS, module_connect_doc},
@@ -253,6 +331,8 @@ static PyMethodDef module_methods[] = {
      pysqlite_adapt_doc},
     {"enable_callback_tracebacks",  (PyCFunction)enable_callback_tracebacks,
      METH_VARARGS, enable_callback_tracebacks_doc},
+    {"config", (PyCFunction)module_config,
+     METH_VARARGS, module_config_doc},
     {NULL, NULL}
 };
 
@@ -433,6 +513,8 @@ PyMODINIT_FUNC init_sqlite(void)
 
     /* initialize microprotocols layer */
     pysqlite_microprotocols_init(dict);
+
+    pysqlite_log_function = NULL;
 
     /* initialize the default converters */
     converters_init(dict);

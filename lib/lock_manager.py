@@ -243,16 +243,17 @@ class SharedExclusiveLock(object):
             if level > old_level:
 
                 if level == LOCK_SHARED:
-                    return self._acquire_shared(client, old_level)
+                    self._acquire_shared(client, old_level)
                 elif level == LOCK_RESERVED:
-                    return self._acquire_reserved(client, old_level)
+                    self._acquire_reserved(client, old_level)
                 elif level == LOCK_EXCLUSIVE:
-                    return self._acquire_exclusive(client, old_level)
+                    self._acquire_exclusive(client, old_level)
                 else:
                     raise ValueError(
                             "Bad lock level {0}, must be LOCK_SHARED ({1}), LOCK_RESERVED ({2}) or LOCK_EXCLUSIVE ({3}))."
                             .format(level, LOCK_SHARED, LOCK_RESERVED, LOCK_EXCLUSIVE))
 
+            self.check_invariant()
             return old_level
 
     def unlock(self, level, client):
@@ -396,6 +397,9 @@ class SharedExclusiveLock(object):
         with self._mutex:
             lock_levels = set(self._lock_holders.values())
             max_level = max(lock_levels) if lock_levels else LOCK_NONE
+
+            # lock_levels can only include levels given as key in LEVEL_NAMES
+            assert lock_levels.issubset(LEVEL_NAMES)
 
             # Nobody can be blocked if nobody is holding a lock.
             assert not self._blocked_clients or self._lock_holders

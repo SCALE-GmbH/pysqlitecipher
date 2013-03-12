@@ -39,8 +39,8 @@ class LockManagerTests(unittest.TestCase):
     def tearDown(self):
         self.manager = None
 
-    def _print(self, fmt, *args):
-        # print fmt % args
+    def _print(self, message):
+        # print fmt
         pass
 
     def CheckSharedLocks(self):
@@ -173,6 +173,30 @@ class LockManagerTests(unittest.TestCase):
             self.assertFalse(exceptions, "Exceptions in threads for lock sequence {0!r}: {1!r}.".format(lock_sequence, exceptions))
             for entry in concurrent_threads:
                 self.assertTrue(len(entry) == 1, "Concurrent threads detected via lock sequence {0!r}: {1!r}".format(lock_sequence, entry))
+
+    def CheckLockFuncFailure(self):
+        """
+        Checks that a failure in the underlying lock function (the actual filesystem lock)
+        is handled gracefully.
+        """
+        def bad_lockfunc(level):
+            raise SyntheticLockFuncError()
+
+        try:
+            self.manager.lock(bad_lockfunc, "filename", LOCK_SHARED, "client")
+            self.fail("Should have raised")
+        except SyntheticLockFuncError:
+            pass
+        self._print(self.manager)
+
+        # As the real locking operation failed, the lock manager should not pretend
+        # that the client is holding a lock.
+        self.assertTrue(self.manager.is_idle())
+
+
+class SyntheticLockFuncError(RuntimeError):
+    """Exception raised in tests to simulate a failure."""
+    pass
 
 
 def suite():

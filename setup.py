@@ -126,7 +126,10 @@ def get_amalgamation():
     # find out what's current amalgamation ZIP file
     download_page = urllib.urlopen("http://sqlite.org/download.html").read()
     pattern = re.compile(r'href="([^"]*sqlite-amalgamation.*?\.zip)"')
-    download_file = pattern.findall(download_page)[0]
+    download_paths = pattern.findall(download_page)
+    pattern = re.compile(r"'(20\d\d/sqlite-amalgamation.*?\.zip)'")
+    download_paths.extend(pattern.findall(download_page))
+    download_file = download_paths[0]
     amalgamation_url = "http://sqlite.org/" + download_file
 
     # and download it

@@ -10,16 +10,15 @@ int pysqlite_inherit_vfs(
     if (!(new_vfs && orig_vfs && vfs_name))
         return SQLITE_MISUSE;
 
-    /* Check that we now the structure of sqlite3_vfs for this version. */
-
-    if (orig_vfs->iVersion > 3)
-        return SQLITE_ERROR;
-
     memset(new_vfs, 0, sizeof(*new_vfs));
     new_vfs->zName = vfs_name;
 
 #   define INHERIT(name) new_vfs->name = orig_vfs->name
     INHERIT(iVersion);
+    /* We only support version 2 at this time. To keep working with newer
+       SQLite releases, we need to fall back in those cases. */
+    if (new_vfs->iVersion > 3)
+        new_vfs->iVersion = 3;
     INHERIT(szOsFile);
     INHERIT(mxPathname);
     INHERIT(pAppData);
@@ -55,13 +54,12 @@ int pysqlite_inherit_io_methods(
     sqlite3_io_methods *new_vmt,
     const sqlite3_io_methods *orig_vmt)
 {
-    /* Check if version is above our head. */
-
-    if (orig_vmt->iVersion > 2)
-        return SQLITE_ERROR;
-
 #   define INHERIT(name)    new_vmt->name = orig_vmt->name
     INHERIT(iVersion);
+    /* We support only VMT version <= 2 at this time. */
+    if (new_vmt->iVersion > 2)
+        new_vmt->iVersion = 2;
+
     INHERIT(xClose);
     INHERIT(xRead);
     INHERIT(xWrite);

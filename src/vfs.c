@@ -152,8 +152,12 @@ static int wrapped_xOpen(
     gstate = PyGILState_Ensure();
 
     methods = sqlite3_malloc(sizeof(*methods));
-    if (!methods)
+    if (!methods) {
+        /* Call original xClose method as the original call was okay. */
+        file->pMethods->xClose(file);
+        file->pMethods = NULL;
         return SQLITE_NOMEM;
+    }
     memset(methods, 0, sizeof(*methods));
 
     rc = lookup_lock_manager(methods);
@@ -205,6 +209,8 @@ static int wrapped_xOpen(
     return rc;
 
 error_out:
+    file->pMethods->xClose(file);
+    file->pMethods = NULL;
     Py_XDECREF(methods->weak_connection);
     Py_XDECREF(methods->lock_manager);
     Py_XDECREF(methods->lock_manager_DeadlockError);

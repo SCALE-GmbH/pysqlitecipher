@@ -464,7 +464,13 @@ class _LockTimeoutError(Exception):
     """Internal exception class signalling that a lock attempt timed out."""
 
 
-def get_lock_manager(lock_manager):
+def get_lock_manager():
+    """
+    Returns the lock manager that will be used for new SQLite connections.
+
+    :rtype: type
+    :return: Current lock manager implementation or :const:`None` if disabled (default).
+    """
     return _lock_manager
 
 

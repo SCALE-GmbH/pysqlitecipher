@@ -26,7 +26,7 @@ import threading
 import traceback
 import time
 import pysqlite2.dbapi2 as sqlite
-from pysqlite2.lock_manager import DefaultLockManager, DeadlockError, \
+from pysqlite2.lock_manager import DefaultLockManager, DeadlockError, get_lock_manager, \
         LOCK_NONE, LOCK_SHARED, LOCK_RESERVED, LOCK_PENDING, LOCK_EXCLUSIVE
 
 
@@ -42,6 +42,10 @@ class LockManagerTests(unittest.TestCase):
     def _print(self, message):
         # print fmt
         pass
+
+    def CheckDisabledByDefault(self):
+        """The lock manager is disabled by default."""
+        self.assertEqual(get_lock_manager(), None)
 
     def CheckSharedLocks(self):
         """Check that we can acquire many shared locks concurrently."""

@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 
-import pprint
+import weakref
+import logging
 import threading
 from collections import deque
 
+_logger = logging.getLogger(__name__)
 
 LOCK_NONE = 0
 LOCK_SHARED = 1
@@ -145,7 +147,8 @@ class DefaultLockManager(LockManager):
         with self._mutex:
             filelock = self._filelocks.get(filename)
             if not filelock:
-                filelock = self.SharedExclusiveLock(mutex=self._mutex, timeout=self.timeout)
+                filelock = self.SharedExclusiveLock(mutex=self._mutex,
+                        timeout=self.timeout, resource=filename)
                 self._filelocks[filename] = filelock
             try:
                 old_level = filelock.lock(level, client)
@@ -175,7 +178,8 @@ class DefaultLockManager(LockManager):
         with self._mutex:
             filelock = self._filelocks.get(filename)
             if not filelock:
-                filelock = self.SharedExclusiveLock(mutex=self._mutex, timeout=self.timeout)
+                filelock = self.SharedExclusiveLock(mutex=self._mutex,
+                        timeout=self.timeout, resource=filename)
                 self._filelocks[filename] = filelock
             try:
                 return filelock.unlock(level, client)
@@ -211,7 +215,13 @@ class DefaultLockManager(LockManager):
 
 class SharedExclusiveLock(object):
 
-    def __init__(self, mutex=None, timeout=None):
+    def __init__(self, mutex=None, timeout=None, resource=None):
+        if resource is None:
+            resource = "<unknown>"
+
+        #: Name of the resource that we are protecting
+        self.resource = resource
+
         #: Mutex used to implement the monitor pattern of the lock.
         self._mutex = threading.RLock() if mutex is None else mutex
 
@@ -292,6 +302,17 @@ class SharedExclusiveLock(object):
         The returned value is retained for the duration of waiting for or holding the lock.
         """
 
+    def _report_timeout(self, blocked_info):
+        _logger.warn("Timed out waiting for %s lock on %r (timeout=%s seconds).",
+                blocked_info.level_name, self.resource, self.timeout)
+        _logger.debug("Lock holders:")
+        for client, level in self._lock_holders.iteritems():
+            levelname = LEVEL_NAMES[level]
+            caller_info = self._lock_holder_caller_info.get(client)
+            if client and isinstance(client, weakref.ref):
+                client = client()
+            _logger.debug("  Client %r level %s, caller info %r", client, levelname, caller_info)
+
     def _acquire_shared(self, client, old_level, caller_info):
         lock_levels = [v for (k, v) in self._lock_holders.items() if k != client]
         max_level = max(lock_levels) if lock_levels else LOCK_NONE
@@ -348,8 +369,7 @@ class SharedExclusiveLock(object):
 
         blocked_info.wait()
         if blocked_info.got_timeout():
-            print "got timeout"
-            pprint.pprint(vars(self))
+            self._report_timeout(blocked_info)
             for pos in range(len(self._blocked_clients)):
                 if self._blocked_clients[pos] is blocked_info:
                     del self._blocked_clients[pos]
@@ -462,6 +482,10 @@ class BlockedClientInfo(object):
         self.caller_info = caller_info
         self._condition = threading.Condition(mutex)
         self._got_lock = False
+
+    @property
+    def level_name(self):
+        return LEVEL_NAMES[self.level]
 
     def wait(self):
         self._condition.wait(self.timeout)

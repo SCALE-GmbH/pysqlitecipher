@@ -2,7 +2,6 @@
 
 import pprint
 import threading
-import traceback
 from collections import deque
 
 
@@ -220,10 +219,9 @@ class SharedExclusiveLock(object):
         #: clients actually holding a lock.
         self._lock_holders = {}
 
-        #: Tracebacks of the locations where each client in _lock_holders got
-        #: his lock. Each traceback is stored as a list of tuples as returned
-        #: by traceback.extract_tb
-        self._lock_holder_traceback = {}
+        #: Caller info for each client in _lock_holders. Can be any object as
+        #: returned by the method _get_caller_info.
+        self._lock_holder_caller_info = {}
 
         #: Queue of clients blocked waiting for the lock. Each entry is an
         #: instance of BlockedClientInfo.
@@ -257,14 +255,15 @@ class SharedExclusiveLock(object):
         """
         with self._mutex:
             old_level = self._lock_holders.get(client, LOCK_NONE)
+            caller_info = self._get_caller_info()
             if level > old_level:
 
                 if level == LOCK_SHARED:
-                    self._acquire_shared(client, old_level)
+                    self._acquire_shared(client, old_level, caller_info)
                 elif level == LOCK_RESERVED:
-                    self._acquire_reserved(client, old_level)
+                    self._acquire_reserved(client, old_level, caller_info)
                 elif level == LOCK_EXCLUSIVE:
-                    self._acquire_exclusive(client, old_level)
+                    self._acquire_exclusive(client, old_level, caller_info)
                 else:
                     raise ValueError(
                             "Bad lock level {0}, must be LOCK_SHARED ({1}), LOCK_RESERVED ({2}) or LOCK_EXCLUSIVE ({3}))."
@@ -279,60 +278,69 @@ class SharedExclusiveLock(object):
             if level < old_level:
                 if level == LOCK_NONE:
                     del self._lock_holders[client]
-                    self._lock_holder_traceback.pop(client)
+                    self._lock_holder_caller_info.pop(client)
                 else:
                     self._lock_holders[client] = level
                 self._wakeup_blocked()
 
-    def _acquire_shared(self, client, old_level):
+    def _get_caller_info(self):
+        """
+        This method should be overridden by sub classes to record information about the
+        caller of the lock manager. Recording the traceback for example makes it possible
+        to find out who is locking the database for too long.
+
+        The returned value is retained for the duration of waiting for or holding the lock.
+        """
+
+    def _acquire_shared(self, client, old_level, caller_info):
         lock_levels = [v for (k, v) in self._lock_holders.items() if k != client]
         max_level = max(lock_levels) if lock_levels else LOCK_NONE
 
         if max_level < LOCK_PENDING and not self._blocked_clients:
             # Fast path: No conflicting lock.
             self._lock_holders[client] = LOCK_SHARED
-            self._lock_holder_traceback[client] = traceback.extract_stack()
+            self._lock_holder_caller_info[client] = caller_info
         else:
-            self._wait(client, LOCK_SHARED)
+            self._wait(client, LOCK_SHARED, caller_info)
 
-    def _acquire_reserved(self, client, old_level):
+    def _acquire_reserved(self, client, old_level, caller_info):
         lock_levels = [v for (k, v) in self._lock_holders.items() if k != client]
         max_level = max(lock_levels) if lock_levels else LOCK_NONE
 
         if max_level < LOCK_RESERVED and not self._blocked_clients:
             # Fast path: No conflicting lock.
             self._lock_holders[client] = LOCK_RESERVED
-            self._lock_holder_traceback[client] = traceback.extract_stack()
+            self._lock_holder_caller_info[client] = caller_info
         else:
             if old_level != LOCK_NONE:
                 raise DeadlockError()
-            self._wait(client, LOCK_RESERVED)
+            self._wait(client, LOCK_RESERVED, caller_info)
 
-    def _acquire_exclusive(self, client, old_level):
+    def _acquire_exclusive(self, client, old_level, caller_info):
         lock_levels = [v for (k, v) in self._lock_holders.items() if k != client]
         max_level = max(lock_levels) if lock_levels else LOCK_NONE
 
         if max_level == LOCK_NONE:
             # Fast path: No conflicting lock.
             self._lock_holders[client] = LOCK_EXCLUSIVE
-            self._lock_holder_traceback[client] = traceback.extract_stack()
+            self._lock_holder_caller_info[client] = caller_info
         elif max_level == LOCK_SHARED:
             # Have to wait for shared locks to be released.
             self._lock_holders[client] = LOCK_PENDING
-            self._lock_holder_traceback[client] = traceback.extract_stack()
-            self._wait(client, LOCK_EXCLUSIVE, enqueue_front=True)
+            self._lock_holder_caller_info[client] = caller_info
+            self._wait(client, LOCK_EXCLUSIVE, caller_info, enqueue_front=True)
         else:   # max_level >= LOCK_RESERVED
             # We can not have a reserved or higher lock level if any other client has
             # a reserved or higher lock level.
             assert old_level == LOCK_NONE or old_level == LOCK_SHARED
 
             if old_level == LOCK_NONE:
-                self._wait(client, LOCK_EXCLUSIVE)
+                self._wait(client, LOCK_EXCLUSIVE, caller_info)
             else:
                 raise DeadlockError()
 
-    def _wait(self, client, level, enqueue_front=False):
-        blocked_info = BlockedClientInfo(client, level, self._mutex, self.timeout)
+    def _wait(self, client, level, caller_info, enqueue_front=False):
+        blocked_info = BlockedClientInfo(client, level, caller_info, self._mutex, self.timeout)
         if enqueue_front:
             self._blocked_clients.appendleft(blocked_info)
         else:
@@ -354,14 +362,14 @@ class SharedExclusiveLock(object):
             blocked_info = self._blocked_clients.popleft()
             client = blocked_info.client
             level = blocked_info.level
-            traceback = blocked_info.traceback
+            caller_info = blocked_info.caller_info
             lock_levels = [v for (k, v) in self._lock_holders.items() if k != client]
             max_level = max(lock_levels) if lock_levels else LOCK_NONE
 
             if level == LOCK_SHARED:
                 if max_level < LOCK_PENDING:
                     self._lock_holders[client] = LOCK_SHARED
-                    self._lock_holder_traceback[client] = traceback
+                    self._lock_holder_caller_info[client] = caller_info
                     blocked_info.signal()
                 else:
                     self._blocked_clients.appendleft(blocked_info)
@@ -370,7 +378,7 @@ class SharedExclusiveLock(object):
             elif level == LOCK_RESERVED:
                 if max_level < LOCK_RESERVED:
                     self._lock_holders[client] = LOCK_RESERVED
-                    self._lock_holder_traceback[client] = traceback
+                    self._lock_holder_caller_info[client] = caller_info
                     blocked_info.signal()
                 else:
                     self._blocked_clients.appendleft(blocked_info)
@@ -379,11 +387,11 @@ class SharedExclusiveLock(object):
             elif level == LOCK_EXCLUSIVE:
                 if max_level == LOCK_NONE:
                     self._lock_holders[client] = LOCK_EXCLUSIVE
-                    self._lock_holder_traceback[client] = traceback
+                    self._lock_holder_caller_info[client] = caller_info
                     blocked_info.signal()
                 elif max_level == LOCK_SHARED:
                     self._lock_holders[client] = LOCK_PENDING
-                    self._lock_holder_traceback[client] = traceback
+                    self._lock_holder_caller_info[client] = caller_info
                     self._blocked_clients.appendleft(blocked_info)
                     break
                 else:   # max_level >= LOCK_RESERVED
@@ -447,11 +455,11 @@ class SharedExclusiveLock(object):
 
 class BlockedClientInfo(object):
 
-    def __init__(self, client, level, mutex, timeout):
+    def __init__(self, client, level, caller_info, mutex, timeout):
         self.client = client
         self.level = level
         self.timeout = timeout
-        self.traceback = traceback.extract_stack()
+        self.caller_info = caller_info
         self._condition = threading.Condition(mutex)
         self._got_lock = False
 

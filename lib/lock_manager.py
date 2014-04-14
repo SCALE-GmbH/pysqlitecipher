@@ -119,9 +119,19 @@ class DefaultLockManager(LockManager):
 
     Keeps a dictionary of filenames involved in active or pending locks, where
     each filename is associated its own SharedExclusiveLock instance.
+
+    :param float timeout: Timeout for lock operations in seconds (default: 5)
+    :param SharedExclusiveLock: SharedExclusiveLock class to use for per-file lock,
+            by default the SharedExclusiveLock class in this module is used.
     """
 
-    def __init__(self, timeout=5):
+    def __init__(self, timeout=5, SharedExclusiveLock=None):
+        if SharedExclusiveLock is None:
+            SharedExclusiveLock = globals()["SharedExclusiveLock"]
+
+        #: SharedExclusiveLock implementation to use
+        self.SharedExclusiveLock = SharedExclusiveLock
+
         #: Protects the lock manager and its contained SharedExclusiveLocks
         self._mutex = threading.RLock()
 
@@ -136,7 +146,7 @@ class DefaultLockManager(LockManager):
         with self._mutex:
             filelock = self._filelocks.get(filename)
             if not filelock:
-                filelock = SharedExclusiveLock(mutex=self._mutex, timeout=self.timeout)
+                filelock = self.SharedExclusiveLock(mutex=self._mutex, timeout=self.timeout)
                 self._filelocks[filename] = filelock
             try:
                 old_level = filelock.lock(level, client)
@@ -166,7 +176,7 @@ class DefaultLockManager(LockManager):
         with self._mutex:
             filelock = self._filelocks.get(filename)
             if not filelock:
-                filelock = SharedExclusiveLock(mutex=self._mutex, timeout=self.timeout)
+                filelock = self.SharedExclusiveLock(mutex=self._mutex, timeout=self.timeout)
                 self._filelocks[filename] = filelock
             try:
                 return filelock.unlock(level, client)

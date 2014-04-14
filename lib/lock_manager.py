@@ -63,6 +63,14 @@ class LockManager(object):
 
     """
 
+    LOCK_NONE = LOCK_NONE
+    LOCK_SHARED = LOCK_SHARED
+    LOCK_RESERVED = LOCK_RESERVED
+    LOCK_PENDING = LOCK_PENDING
+    LOCK_EXCLUSIVE = LOCK_EXCLUSIVE
+
+    LEVEL_NAMES = LEVEL_NAMES
+
     def lock(self, lockfunc, filename, level, client):
         """
         Lock the database file given in *filename* to the locking level given

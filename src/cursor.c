@@ -71,6 +71,8 @@ static pysqlite_StatementKind detect_statement_type(char* statement)
         return STATEMENT_DELETE;
     } else if (!strcmp(buf, "replace")) {
         return STATEMENT_REPLACE;
+    } else if (!strcmp(buf, "savepoint") || !strcmp(buf, "release") || !strcmp(buf, "rollback")) {
+        return STATEMENT_SAVEPOINT_RELEASE;
     } else {
         return STATEMENT_OTHER;
     }
@@ -606,6 +608,7 @@ PyObject* _pysqlite_query_execute(pysqlite_Cursor* self, int multiple, PyObject*
             case STATEMENT_DELETE:
             case STATEMENT_INSERT:
             case STATEMENT_REPLACE:
+            case STATEMENT_SAVEPOINT_RELEASE:
                 if (!self->connection->inTransaction) {
                     result = _pysqlite_connection_begin(self->connection);
                     if (!result) {

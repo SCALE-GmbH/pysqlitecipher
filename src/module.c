@@ -1,6 +1,6 @@
 /* module.c - the module itself
  *
- * Copyright (C) 2004-2010 Gerhard Häring <gh@ghaering.de>
+ * Copyright (C) 2004-2010 Gerhard Hï¿½ring <gh@ghaering.de>
  *
  * This file is part of pysqlite.
  *
@@ -269,6 +269,63 @@ static void pysqlite_log_trampoline(void *pyfunc, int code, const char *message)
     PyGILState_Release(gstate);
 }
 
+
+// copied over from sqlite3 because this is not present in sqlcipher
+// BEGIN
+#define ArraySize(X)    ((int)(sizeof(X)/sizeof(X[0])))
+/*
+** Return a static string that describes the kind of error specified in the
+** argument.
+*/
+const char *_sqlite3_errstr(int rc){
+  static const char* const aMsg[] = {
+    /* SQLITE_OK          */ "not an error",
+    /* SQLITE_ERROR       */ "SQL logic error or missing database",
+    /* SQLITE_INTERNAL    */ 0,
+    /* SQLITE_PERM        */ "access permission denied",
+    /* SQLITE_ABORT       */ "callback requested query abort",
+    /* SQLITE_BUSY        */ "database is locked",
+    /* SQLITE_LOCKED      */ "database table is locked",
+    /* SQLITE_NOMEM       */ "out of memory",
+    /* SQLITE_READONLY    */ "attempt to write a readonly database",
+    /* SQLITE_INTERRUPT   */ "interrupted",
+    /* SQLITE_IOERR       */ "disk I/O error",
+    /* SQLITE_CORRUPT     */ "database disk image is malformed",
+    /* SQLITE_NOTFOUND    */ "unknown operation",
+    /* SQLITE_FULL        */ "database or disk is full",
+    /* SQLITE_CANTOPEN    */ "unable to open database file",
+    /* SQLITE_PROTOCOL    */ "locking protocol",
+    /* SQLITE_EMPTY       */ "table contains no data",
+    /* SQLITE_SCHEMA      */ "database schema has changed",
+    /* SQLITE_TOOBIG      */ "string or blob too big",
+    /* SQLITE_CONSTRAINT  */ "constraint failed",
+    /* SQLITE_MISMATCH    */ "datatype mismatch",
+    /* SQLITE_MISUSE      */ "library routine called out of sequence",
+    /* SQLITE_NOLFS       */ "large file support is disabled",
+    /* SQLITE_AUTH        */ "authorization denied",
+    /* SQLITE_FORMAT      */ "auxiliary database format error",
+    /* SQLITE_RANGE       */ "bind or column index out of range",
+    /* SQLITE_NOTADB      */ "file is encrypted or is not a database",
+  };
+  const char *zErr = "unknown error";
+  switch( rc ){
+    case SQLITE_ABORT_ROLLBACK: {
+      zErr = "abort due to ROLLBACK";
+      break;
+    }
+    default: {
+      rc &= 0xff;
+      if( rc>=0 && rc<ArraySize(aMsg) && aMsg[rc]!=0 ){
+        zErr = aMsg[rc];
+      }
+      break;
+    }
+  }
+  return zErr;
+}
+// END
+
+
 static PyObject* module_config(PyObject* self, PyObject* args)
 {
     int rc = SQLITE_OK;
@@ -306,7 +363,7 @@ static PyObject* module_config(PyObject* self, PyObject* args)
 
     if (rc != SQLITE_OK) {
         return PyErr_Format(pysqlite_InternalError, "Setting option %s failed: %s",
-                option_name, sqlite3_errstr(rc));
+                option_name, _sqlite3_errstr(rc));
     }
 
     Py_RETURN_NONE;
@@ -385,13 +442,14 @@ static IntConstantPair _int_constants[] = {
     {(char*)NULL, 0}
 };
 
-PyMODINIT_FUNC init_sqlite(void)
+
+void _init_module(char* name, char* errmsg)
 {
     PyObject *module, *dict;
     PyObject *tmp_obj;
     int i;
 
-    module = Py_InitModule("pysqlite2._sqlite", module_methods);
+    module = Py_InitModule(name, module_methods);
 
     if (!module ||
         (pysqlite_row_setup_types() < 0) ||
@@ -525,7 +583,7 @@ PyMODINIT_FUNC init_sqlite(void)
 
     /* Original comment from _bsddb.c in the Python core. This is also still
      * needed nowadays for Python 2.3/2.4.
-     * 
+     *
      * PyEval_InitThreads is called here due to a quirk in python 1.5
      * - 2.2.1 (at least) according to Russell Williamson <merel@wt.net>:
      * The global interpreter lock is not initialized until the first
@@ -543,6 +601,18 @@ PyMODINIT_FUNC init_sqlite(void)
 error:
     if (PyErr_Occurred())
     {
-        PyErr_SetString(PyExc_ImportError, "pysqlite2._sqlite: init failed");
+        PyErr_SetString(PyExc_ImportError, errmsg);
     }
+}
+
+
+PyMODINIT_FUNC init_sqlite(void)
+{
+    _init_module("pysqlite2._sqlite", "pysqlite2._sqlite: init failed");
+}
+
+
+PyMODINIT_FUNC init_sqlcipher(void)
+{
+    _init_module("pysqlite2._sqlcipher", "pysqlite2._sqlcipher: init failed");
 }

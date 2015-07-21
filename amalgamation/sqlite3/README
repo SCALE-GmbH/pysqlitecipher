@@ -1,0 +1,7 @@
+Place the files
+
+sqlite3.h
+sqlite3.c
+
+from an SQLite3 amalgamation of your choice here. See, for instance,
+http://www.sqlite.org/2015/sqlite-amalgamation-3081002.zip

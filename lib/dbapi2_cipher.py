@@ -24,7 +24,7 @@
 import datetime
 import time
 
-from pysqlite2._sqlite import *
+from pysqlite2._sqlcipher import *
 
 paramstyle = "qmark"
 

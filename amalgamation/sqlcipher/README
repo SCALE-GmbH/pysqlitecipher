@@ -1,0 +1,7 @@
+Place the files
+
+sqlite3.h
+sqlite3.c
+
+from an SQLCipher amalgamation of your choice here. See, for instance,
+https://downloads.leap.se/libs/pysqlcipher/amalgamation-sqlcipher-2.1.0.zip

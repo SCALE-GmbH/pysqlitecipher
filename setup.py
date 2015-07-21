@@ -1,7 +1,10 @@
-#-*- coding: ISO-8859-1 -*-
+# coding=utf-8
 # setup.py: the distutils script
 #
-# Copyright (C) 2004-2007 Gerhard H�ring <gh@ghaering.de>
+# Copyright (C) 2015 Matthias Büchse <github@mbue.de> (integration of earlier work into one package)
+# Copyright (C) 2012-2014 Torsten Landschoff <torsten@landschoff.net> (Python lock manager, SAVEPOINT support)
+# Copyright (C) 2013 Kali Kaneko <kali@futeisha.org> (sqlcipher support)
+# Copyright (C) 2004-2007 Gerhard Häring <gh@ghaering.de>
 #
 # This file is part of pysqlite.
 #
@@ -21,76 +24,38 @@
 #    misrepresented as being the original software.
 # 3. This notice may not be removed or altered from any source distribution.
 
-import glob, os, re, sys
-import urllib
-import zipfile
-import subprocess
+import glob
+from itertools import ifilter
+import os
+import re
+import sys
 
 from distutils.core import setup, Extension, Command
-from distutils.command.build import build
-from distutils.command.build_ext import build_ext
 
 import cross_bdist_wininst
 
 # If you need to change anything, it should be enough to change setup.cfg.
-
-sqlite = "sqlite"
-
 PYSQLITE_EXPERIMENTAL = False
 
-sources = ["src/module.c", "src/connection.c", "src/cursor.c", "src/cache.c",
+SOURCES = ["src/module.c", "src/connection.c", "src/cursor.c", "src/cache.c",
            "src/microprotocols.c", "src/prepare_protocol.c", "src/statement.c",
            "src/util.c", "src/row.c", "src/vfs.c", "src/inherit_vfs.c"]
-
 if PYSQLITE_EXPERIMENTAL:
-    sources.append("src/backup.c")
+    SOURCES.append("src/backup.c")
 
-include_dirs = []
-library_dirs = []
-libraries = []
-runtime_library_dirs = []
-extra_objects = []
-define_macros = []
+DEFINE_MACROS = [("SQLITE_ENABLE_FTS3", "1"), ("SQLITE_ENABLE_RTREE", "1"),("THREADSAFE", "1"),
+                 ("SQLITE_ENABLE_COLUMN_METADATA", "1")]
 
-long_description = \
-"""Python interface to SQLite 3
+LONG_DESCRIPTION = """\
+Python interface to SQLite 3
 
 pysqlite is an interface to the SQLite 3.x embedded relational database engine.
 It is almost fully compliant with the Python database API version 2.0 also
 exposes the unique features of SQLite."""
 
-def check_output(*popenargs, **kwargs):
-    process = subprocess.Popen(stdout=subprocess.PIPE, *popenargs, **kwargs)
-    output, unused_err = process.communicate()
-    retcode = process.poll()
-    if retcode:
-        cmd = kwargs.get("args")
-        if cmd is None:
-            cmd = popenargs[0]
-        raise subprocess.CalledProcessError(retcode, cmd, output=output)
-    return output
 
-
-if sys.platform != "win32":
-    define_macros.append(('MODULE_NAME', '"pysqlite2.dbapi2"'))
-else:
-    define_macros.append(('MODULE_NAME', '\\"pysqlite2.dbapi2\\"'))
-
-
-# On Unix platforms we can determine the install location of sqlite3 from pkg-config
-
-if sys.platform != "win32":
-    try:
-        pkg_config_output = check_output("pkg-config --cflags --libs sqlite3", shell=True)
-        for token in pkg_config_output.split():
-            if token.startswith("-I"):
-                include_dirs.append(token[2:])
-            elif token.startswith("-l"):
-                libraries.append(token[2:])
-            elif token.startswith("-L"):
-                library_dirs.append(token[2:])
-    except subprocess.CalledProcessError, e:
-        print "Falling back to default paths as calling pkg-config failed:\n  {0}".format(e)
+DATA_FILES = [("pysqlite2-doc", glob.glob("doc/*.html") + glob.glob("doc/*.txt") + glob.glob("doc/*.css")),
+              ("pysqlite2-doc/code", glob.glob("doc/code/*.py"))]
 
 
 class DocBuilder(Command):
@@ -104,7 +69,8 @@ class DocBuilder(Command):
         pass
 
     def run(self):
-        import os, shutil
+        import os
+        import shutil
         try:
             shutil.rmtree("build/doc")
         except OSError:
@@ -114,123 +80,76 @@ class DocBuilder(Command):
         if rc != 0:
             print "Is sphinx installed? If not, try 'sudo easy_install sphinx'."
 
+
 AMALGAMATION_ROOT = "amalgamation"
+QMARK = '"' if sys.platform != "win32" else '\\"'
 
-def get_amalgamation():
-    """Download the SQLite amalgamation if it isn't there, already."""
-    if os.path.exists(AMALGAMATION_ROOT):
-        return
-    os.mkdir(AMALGAMATION_ROOT)
-    print "Downloading amalgation."
 
-    # find out what's current amalgamation ZIP file
-    download_page = urllib.urlopen("http://sqlite.org/download.html").read()
-    pattern = re.compile(r'href="([^"]*sqlite-amalgamation.*?\.zip)"')
-    download_paths = pattern.findall(download_page)
-    pattern = re.compile(r"'(20\d\d/sqlite-amalgamation.*?\.zip)'")
-    download_paths.extend(pattern.findall(download_page))
-    download_file = download_paths[0]
-    amalgamation_url = "http://sqlite.org/" + download_file
+def get_lite_ext():
+    amalgamation_dir = os.path.join(AMALGAMATION_ROOT, "sqlite3")
+    extra_macros = [('MODULE_NAME', QMARK + 'pysqlite2.dbapi2' + QMARK)]
+    extra_sources = [os.path.join(amalgamation_dir, "sqlite3.c")]
+    return Extension(name="pysqlite2._sqlite", sources=SOURCES + extra_sources, include_dirs=[amalgamation_dir],
+                     define_macros=DEFINE_MACROS + extra_macros)
 
-    # and download it
-    urllib.urlretrieve(amalgamation_url, "tmp.zip")
 
-    zf = zipfile.ZipFile("tmp.zip")
-    files = ["sqlite3.c", "sqlite3.h"]
-    directory = zf.namelist()[0]
-    for fn in files:
-        print "Extracting", fn
-        outf = open(AMALGAMATION_ROOT + os.sep + fn, "wb")
-        outf.write(zf.read(directory + fn))
-        outf.close()
-    zf.close()
-    os.unlink("tmp.zip")
-
-class AmalgamationBuilder(build):
-    description = "Build a statically built pysqlite using the amalgamtion."
-
-    def __init__(self, *args, **kwargs):
-        MyBuildExt.amalgamation = True
-        build.__init__(self, *args, **kwargs)
-
-class MyBuildExt(build_ext):
+def get_cipher_ext():
+    amalgamation_dir = os.path.join(AMALGAMATION_ROOT, "sqlcipher")
+    extra_macros = [('MODULE_NAME', QMARK + 'pysqlite2.dbapi2cipher' + QMARK),
+                    ("SQLITE_ENABLE_LOAD_EXTENSION", "1"), ("SQLITE_HAS_CODEC", "1"), ("SQLITE_TEMP_STORE", "2")]
+    extra_sources = [os.path.join(amalgamation_dir, "sqlite3.c")]
+    include_dirs = [amalgamation_dir]
+    extra_link_args = []
     if sys.platform == "win32":
-        amalgamation = True
+        # Try to locate openssl
+        openssl_conf = os.environ.get('OPENSSL_CONF')
+        if not openssl_conf:
+            sys.exit('Fatal error: OpenSSL could not be detected!')
+        openssl = os.path.dirname(os.path.dirname(openssl_conf))
+
+        # Configure the compiler
+        include_dirs.append(os.path.join(openssl, "include"))
+        extra_macros.append(("inline", "__inline"))
+
+        # Configure the linker
+        extra_link_args.append("libeay32.lib")
+        extra_link_args.append("/LIBPATH:" + os.path.join(openssl, "lib"))
     else:
-        amalgamation = False
+        extra_link_args.append("-lcrypto")
+    return Extension(name="pysqlite2._sqlcipher", sources=SOURCES + extra_sources, include_dirs=include_dirs,
+                     extra_link_args=extra_link_args, define_macros=DEFINE_MACROS + extra_macros)
 
-    def build_extension(self, ext):
-        if self.amalgamation:
-            get_amalgamation()
-            ext.define_macros.append(("SQLITE_ENABLE_FTS3", "1"))   # build with fulltext search enabled
-            ext.define_macros.append(("SQLITE_ENABLE_RTREE", "1"))   # build with fulltext search enabled
-            ext.sources.append(os.path.join(AMALGAMATION_ROOT, "sqlite3.c"))
-            ext.include_dirs.append(AMALGAMATION_ROOT)
-        ext.define_macros.append(("THREADSAFE", "1"))
-        ext.define_macros.append(("SQLITE_ENABLE_COLUMN_METADATA", "1"))
-        build_ext.build_extension(self, ext)
 
-    def __setattr__(self, k, v):
-        # Make sure we don't link against the SQLite library, no matter what setup.cfg says
-        if self.amalgamation and k == "libraries":
-            v = None
-        self.__dict__[k] = v
-
-def get_setup_args():
-
-    PYSQLITE_VERSION = None
-
+def determine_version(module_h_path):
     version_re = re.compile('#define PYSQLITE_VERSION "(.*)"')
-    f = open(os.path.join("src", "module.h"))
-    for line in f:
-        match = version_re.match(line)
-        if match:
-            PYSQLITE_VERSION = match.groups()[0]
-            PYSQLITE_MINOR_VERSION = ".".join(PYSQLITE_VERSION.split('.')[:2])
-            break
-    f.close()
+    with open(module_h_path) as f:
+        match = next(ifilter(bool, (version_re.match(line) for line in f)), None)
+    if match is None:
+        raise SystemExit("Fatal error: PYSQLITE_VERSION could not be detected!")
+    return match.groups()[0]
+    # pysqlite_minor_version = ".".join(result.split('.')[:2])
 
-    if not PYSQLITE_VERSION:
-        print "Fatal error: PYSQLITE_VERSION could not be detected!"
-        sys.exit(1)
 
-    data_files = [("pysqlite2-doc",
-                        glob.glob("doc/*.html") \
-                      + glob.glob("doc/*.txt") \
-                      + glob.glob("doc/*.css")),
-                   ("pysqlite2-doc/code",
-                        glob.glob("doc/code/*.py"))]
-
-    py_modules = ["sqlite"]
+def main():
     setup_args = dict(
-            name = "pysqlite",
-            version = PYSQLITE_VERSION,
-            description = "DB-API 2.0 interface for SQLite 3.x",
-            long_description=long_description,
-            author = "Gerhard Haering",
-            author_email = "gh@ghaering.de",
-            license = "zlib/libpng license",
-            platforms = "ALL",
-            url = "http://pysqlite.googlecode.com/",
-            download_url = "http://code.google.com/p/pysqlite/downloads/list",
+        name="pysqlitecipher",
+        version=determine_version(os.path.join("src", "module.h")),
+        description="DB-API 2.0 interface for both SQLite 3.x and SQLCipher",
+        long_description=LONG_DESCRIPTION,
+        author="Gerhard Haering",
+        author_email="gh@ghaering.de",
+        license="zlib/libpng license",
+        platforms="ALL",
+        url="https://github.com/mbuechse/pysqlite",
+        download_url="https://github.com/mbuechse/pysqlite/archive/master.zip",
 
-            # Description of the modules and packages in the distribution
-            package_dir = {"pysqlite2": "lib"},
-            packages = ["pysqlite2", "pysqlite2.test"] +
-                       (["pysqlite2.test.py25"], [])[sys.version_info < (2, 5)],
-            scripts=[],
-            data_files = data_files,
-
-            ext_modules = [Extension( name="pysqlite2._sqlite",
-                                      sources=sources,
-                                      include_dirs=include_dirs,
-                                      library_dirs=library_dirs,
-                                      runtime_library_dirs=runtime_library_dirs,
-                                      libraries=libraries,
-                                      extra_objects=extra_objects,
-                                      define_macros=define_macros
-                                      )],
-            classifiers = [
+        # Description of the modules and packages in the distribution
+        package_dir={"pysqlite2": "lib"},
+        packages=["pysqlite2", "pysqlite2.test"] + (["pysqlite2.test.py25"], [])[sys.version_info < (2, 5)],
+        scripts=[],
+        data_files=DATA_FILES,
+        ext_modules=[get_lite_ext(), get_cipher_ext()],
+        classifiers=[
             "Development Status :: 5 - Production/Stable",
             "Intended Audience :: Developers",
             "License :: OSI Approved :: zlib/libpng License",
@@ -241,14 +160,8 @@ def get_setup_args():
             "Programming Language :: Python",
             "Topic :: Database :: Database Engines/Servers",
             "Topic :: Software Development :: Libraries :: Python Modules"],
-            cmdclass = {"build_docs": DocBuilder}
-            )
-
-    setup_args["cmdclass"].update({"build_docs": DocBuilder, "build_ext": MyBuildExt, "build_static": AmalgamationBuilder, "cross_bdist_wininst": cross_bdist_wininst.bdist_wininst})
-    return setup_args
-
-def main():
-    setup(**get_setup_args())
+        cmdclass={"build_docs": DocBuilder, "cross_bdist_wininst": cross_bdist_wininst.bdist_wininst})
+    setup(**setup_args)
 
 if __name__ == "__main__":
     main()

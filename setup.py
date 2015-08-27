@@ -211,8 +211,8 @@ def get_setup_args():
             author_email = "gh@ghaering.de",
             license = "zlib/libpng license",
             platforms = "ALL",
-            url = "http://pysqlite.googlecode.com/",
-            download_url = "http://code.google.com/p/pysqlite/downloads/list",
+            url = "https://bitbucket.org/bluehorn/pysqlite/overview",
+            download_url = "https://bitbucket.org/bluehorn/pysqlite/",
 
             # Description of the modules and packages in the distribution
             package_dir = {"pysqlite2": "lib"},

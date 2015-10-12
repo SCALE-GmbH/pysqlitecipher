@@ -329,7 +329,11 @@ error_out:
             PyObject *message;
             PyErr_Fetch(&etype, &evalue, &etb);
             message = PyObject_GetAttrString(evalue, "message");
-            if (PyInt_Check(message)) {
+            if (!message) {
+                PyErr_Print();
+                rc = SQLITE_IOERR_LOCK;
+            }
+            else if (PyInt_Check(message)) {
                 rc = PyInt_AsLong(message);
             } else {
                 rc = SQLITE_IOERR_LOCK;

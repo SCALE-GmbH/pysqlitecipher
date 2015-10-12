@@ -326,19 +326,21 @@ error_out:
             rc = SQLITE_BUSY;
         } else if (PyErr_ExceptionMatches(pysqlite_CallbackError)) {
             PyObject *etype, *evalue, *etb;
-            PyObject *message;
+            PyObject *args;
             PyErr_Fetch(&etype, &evalue, &etb);
-            message = PyObject_GetAttrString(evalue, "message");
-            if (!message) {
+            args = PyObject_GetAttrString(evalue, "args");
+            if (!args) {
                 PyErr_Print();
                 rc = SQLITE_IOERR_LOCK;
             }
-            else if (PyInt_Check(message)) {
-                rc = PyInt_AsLong(message);
+            else if (PyTuple_Check(args)
+                    && PyTuple_GET_SIZE(args) == 1
+                    && PyInt_Check(PyTuple_GET_ITEM(args, 0))) {
+                rc = PyInt_AS_LONG(PyTuple_GET_ITEM(args, 0));
             } else {
                 rc = SQLITE_IOERR_LOCK;
             }
-            Py_XDECREF(message);
+            Py_XDECREF(args);
             Py_XDECREF(etype);
             Py_XDECREF(evalue);
             Py_XDECREF(etb);

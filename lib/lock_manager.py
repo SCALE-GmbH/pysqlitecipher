@@ -174,7 +174,8 @@ class DefaultLockManager(LockManager):
         except Exception, e:
             # print "lockfunc raised {0}: {1}.".format(type(e).__name__, repr(e.args))
             self.unlock(filename, old_level, client)
-            self.lock_result(filename, level, client, e.message)
+            resultcode = e.args[0]
+            self.lock_result(filename, level, client, resultcode)
             raise
 
     def lock_result(self, filename, level, client, resultcode):

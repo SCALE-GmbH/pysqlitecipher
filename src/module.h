@@ -25,6 +25,7 @@
 #define PYSQLITE_MODULE_H
 #include "Python.h"
 
+/* this is only the base version; append local version in setup.py */
 #define PYSQLITE_VERSION "2.6.3.105"
 
 extern PyObject* pysqlite_Error;

@@ -46,6 +46,8 @@
 #endif
 #endif
 
+#define UNATTACHED_THREAD_IDENT (-1)
+
 static int pysqlite_connection_set_isolation_level(pysqlite_Connection* self, PyObject* isolation_level);
 static void _pysqlite_drop_unused_cursor_references(pysqlite_Connection* self);
 static int pysqlite_connection_init_vfs(pysqlite_Connection *self);
@@ -1472,6 +1474,36 @@ finally:
     return retval;
 }
 
+static PyObject *
+pysqlite_connection_attach_thread(pysqlite_Connection* self, PyObject* args)
+{
+    long current_thread_ident = PyThread_get_thread_ident();
+
+    if (self->thread_ident != UNATTACHED_THREAD_IDENT) {
+    	return PyErr_Format(pysqlite_ProgrammingError,
+                "Can not attach SQLite connection to thread %ld, it is in use in thread %ld.",
+                current_thread_ident, self->thread_ident);
+    }
+
+    self->thread_ident = current_thread_ident;
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+pysqlite_connection_detach_thread(pysqlite_Connection* self, PyObject* args)
+{
+    /* It would be great to check here that the detaching thread is in fact the
+       owning thread. However, this will not work with the ConnectionPool of
+       SQLAlchemy, since dropping the last reference will return the connection
+       to the pool. The cleanup function can easily be called on the wrong thread
+       by the garbage collector. */
+
+    self->thread_ident = UNATTACHED_THREAD_IDENT;
+    Py_RETURN_NONE;
+}
+
+
+
 /* Function author: Paul Kippes <kippesp@gmail.com>
  * Class method of Connection to call the Python function _iterdump
  * of the sqlite3 module.
@@ -1677,6 +1709,11 @@ static PyMethodDef connection_methods[] = {
         PyDoc_STR("Abort any pending database operation. Non-standard.")},
     {"iterdump", (PyCFunction)pysqlite_connection_iterdump, METH_NOARGS,
         PyDoc_STR("Returns iterator to the dump of the database in an SQL text format. Non-standard.")},
+    {"detach_thread", (PyCFunction)pysqlite_connection_detach_thread, METH_NOARGS,
+        PyDoc_STR("Detaches the connection from the current thread, rendering it unusable until "
+                  "attach_thread is called. Non-standard.")},
+    {"attach_thread", (PyCFunction)pysqlite_connection_attach_thread, METH_NOARGS,
+        PyDoc_STR("Attaches the connection to the current thread, making it usable only from here. Non-standard.")},
     {"__enter__", (PyCFunction)pysqlite_connection_enter, METH_NOARGS,
         PyDoc_STR("For context manager. Non-standard.")},
     {"__exit__", (PyCFunction)pysqlite_connection_exit, METH_VARARGS,

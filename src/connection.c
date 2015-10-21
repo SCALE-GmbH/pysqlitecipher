@@ -442,7 +442,12 @@ PyObject* pysqlite_connection_close(pysqlite_Connection* self, PyObject* args)
     PyObject* ret;
     int rc;
 
-    if (!pysqlite_check_thread(self)) {
+    /* If the connection is moved between threads using attach and detach and is
+       currently detached, then closing is allowed from any thread. Otherwise
+       this will hinder closing by garbage collection (like when using SQLAlchemy
+       QueuePool). */
+
+    if (self->thread_ident != UNATTACHED_THREAD_IDENT && !pysqlite_check_thread(self)) {
         return NULL;
     }
 

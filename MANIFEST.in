@@ -1,5 +1,7 @@
 include MANIFEST.in
 include LICENSE
+include amalgamation/sqlite3/*
+include amalgamation/sqlcipher/*
 include cross_bdist_wininst.py
 include doc/*.txt
 include doc/includes/sqlite3/*.py

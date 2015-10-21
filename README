@@ -1,0 +1,3 @@
+Place the sqlite3 and sqlcipher amalgamations in the amalgamations directory.
+If you are using devpi, add --no-vcs to the upload command; otherwise it will
+not include the amalgamations, for they are not in the git repository. Sigh.

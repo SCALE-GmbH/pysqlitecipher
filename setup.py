@@ -28,6 +28,7 @@ import glob
 from itertools import ifilter
 import os
 import re
+import subprocess
 import sys
 
 from distutils.core import setup, Extension, Command
@@ -89,8 +90,30 @@ def get_lite_ext():
     amalgamation_dir = os.path.join(AMALGAMATION_ROOT, "sqlite3")
     extra_macros = [('MODULE_NAME', QMARK + 'pysqlite2.dbapi2' + QMARK)]
     extra_sources = [os.path.join(amalgamation_dir, "sqlite3.c")]
-    return Extension(name="pysqlite2._sqlite", sources=SOURCES + extra_sources, include_dirs=[amalgamation_dir],
-                     define_macros=DEFINE_MACROS + extra_macros)
+    include_dirs = [amalgamation_dir]
+    libraries = []
+    library_dirs = []
+
+    if sys.platform != "win32":
+        # try to use the system's shared library, because having two libraries (say, one shared and one
+        # statically linked) interferes with POSIX locking on "begin exclusive"
+        try:
+            pkg_config_output = subprocess.check_output("pkg-config --cflags --libs sqlite3", shell=True)
+        except subprocess.CalledProcessError, e:
+            print "Falling back to default paths as calling pkg-config failed:\n  {0}".format(e)
+        else:
+            extra_sources = []
+            include_dirs = []
+            for token in pkg_config_output.split():
+                if token.startswith("-I"):
+                    include_dirs.append(token[2:])
+                elif token.startswith("-l"):
+                    libraries.append(token[2:])
+                elif token.startswith("-L"):
+                    library_dirs.append(token[2:])
+
+    return Extension(name="pysqlite2._sqlite", sources=SOURCES + extra_sources, include_dirs=include_dirs,
+                     define_macros=DEFINE_MACROS + extra_macros, libraries=libraries, library_dirs=library_dirs)
 
 
 def get_cipher_ext():

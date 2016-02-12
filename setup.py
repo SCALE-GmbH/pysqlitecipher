@@ -118,7 +118,7 @@ def get_lite_ext():
 
 def get_cipher_ext():
     amalgamation_dir = os.path.join(AMALGAMATION_ROOT, "sqlcipher")
-    extra_macros = [('MODULE_NAME', QMARK + 'pysqlite2.dbapi2cipher' + QMARK),
+    extra_macros = [('MODULE_NAME', QMARK + 'pysqlite2.dbapi2_cipher' + QMARK),
                     ("SQLITE_ENABLE_LOAD_EXTENSION", "1"), ("SQLITE_HAS_CODEC", "1"), ("SQLITE_TEMP_STORE", "2")]
     extra_sources = [os.path.join(amalgamation_dir, "sqlite3.c")]
     include_dirs = [amalgamation_dir]

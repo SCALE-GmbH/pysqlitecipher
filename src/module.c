@@ -401,6 +401,7 @@ void _init_module(char* name, char* errmsg)
         (pysqlite_connection_setup_types() < 0) ||
         (pysqlite_cache_setup_types() < 0) ||
         (pysqlite_statement_setup_types() < 0) ||
+        (pysqlite_vfs_register(module) < 0) ||
         (pysqlite_vfs_setup_types() < 0) ||
         #ifdef PYSQLITE_EXPERIMENTAL
         (pysqlite_backup_setup_types() < 0) ||

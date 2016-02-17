@@ -24,6 +24,7 @@
 import glob, os, re, sys
 import urllib
 import zipfile
+import subprocess
 
 from distutils.core import setup, Extension, Command
 from distutils.command.build import build
@@ -39,7 +40,8 @@ PYSQLITE_EXPERIMENTAL = False
 
 sources = ["src/module.c", "src/connection.c", "src/cursor.c", "src/cache.c",
            "src/microprotocols.c", "src/prepare_protocol.c", "src/statement.c",
-           "src/util.c", "src/row.c"]
+           "src/util.c", "src/row.c", "src/connection_vfs.c", "src/inherit_vfs.c",
+           "src/vfs.c"]
 
 if PYSQLITE_EXPERIMENTAL:
     sources.append("src/backup.c")
@@ -58,10 +60,39 @@ pysqlite is an interface to the SQLite 3.x embedded relational database engine.
 It is almost fully compliant with the Python database API version 2.0 also
 exposes the unique features of SQLite."""
 
+def check_output(*popenargs, **kwargs):
+    process = subprocess.Popen(stdout=subprocess.PIPE, *popenargs, **kwargs)
+    output, unused_err = process.communicate()
+    retcode = process.poll()
+    if retcode:
+        cmd = kwargs.get("args")
+        if cmd is None:
+            cmd = popenargs[0]
+        raise subprocess.CalledProcessError(retcode, cmd, output=output)
+    return output
+
+
 if sys.platform != "win32":
     define_macros.append(('MODULE_NAME', '"pysqlite2.dbapi2"'))
 else:
     define_macros.append(('MODULE_NAME', '\\"pysqlite2.dbapi2\\"'))
+
+
+# On Unix platforms we can determine the install location of sqlite3 from pkg-config
+
+if sys.platform != "win32":
+    try:
+        pkg_config_output = check_output("pkg-config --cflags --libs sqlite3", shell=True)
+        for token in pkg_config_output.split():
+            if token.startswith("-I"):
+                include_dirs.append(token[2:])
+            elif token.startswith("-l"):
+                libraries.append(token[2:])
+            elif token.startswith("-L"):
+                library_dirs.append(token[2:])
+    except subprocess.CalledProcessError, e:
+        print "Falling back to default paths as calling pkg-config failed:\n  {0}".format(e)
+
 
 class DocBuilder(Command):
     description = "Builds the documentation"
@@ -95,8 +126,11 @@ def get_amalgamation():
 
     # find out what's current amalgamation ZIP file
     download_page = urllib.urlopen("http://sqlite.org/download.html").read()
-    pattern = re.compile("(sqlite-amalgamation.*?\.zip)")
-    download_file = pattern.findall(download_page)[0]
+    pattern = re.compile(r'href="([^"]*sqlite-amalgamation.*?\.zip)"')
+    download_paths = pattern.findall(download_page)
+    pattern = re.compile(r"'(20\d\d/sqlite-amalgamation.*?\.zip)'")
+    download_paths.extend(pattern.findall(download_page))
+    download_file = download_paths[0]
     amalgamation_url = "http://sqlite.org/" + download_file
 
     # and download it
@@ -121,7 +155,10 @@ class AmalgamationBuilder(build):
         build.__init__(self, *args, **kwargs)
 
 class MyBuildExt(build_ext):
-    amalgamation = False
+    if sys.platform == "win32":
+        amalgamation = True
+    else:
+        amalgamation = False
 
     def build_extension(self, ext):
         if self.amalgamation:
@@ -130,6 +167,8 @@ class MyBuildExt(build_ext):
             ext.define_macros.append(("SQLITE_ENABLE_RTREE", "1"))   # build with fulltext search enabled
             ext.sources.append(os.path.join(AMALGAMATION_ROOT, "sqlite3.c"))
             ext.include_dirs.append(AMALGAMATION_ROOT)
+        ext.define_macros.append(("THREADSAFE", "1"))
+        ext.define_macros.append(("SQLITE_ENABLE_COLUMN_METADATA", "1"))
         build_ext.build_extension(self, ext)
 
     def __setattr__(self, k, v):
@@ -173,8 +212,8 @@ def get_setup_args():
             author_email = "gh@ghaering.de",
             license = "zlib/libpng license",
             platforms = "ALL",
-            url = "http://pysqlite.googlecode.com/",
-            download_url = "http://code.google.com/p/pysqlite/downloads/list",
+            url = "https://bitbucket.org/bluehorn/pysqlite/overview",
+            download_url = "https://bitbucket.org/bluehorn/pysqlite/",
 
             # Description of the modules and packages in the distribution
             package_dir = {"pysqlite2": "lib"},

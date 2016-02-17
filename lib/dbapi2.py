@@ -24,6 +24,7 @@
 import datetime
 import time
 
+from packaging.version import parse as parse_version
 from pysqlite2._sqlite import *
 
 paramstyle = "qmark"
@@ -47,7 +48,8 @@ def TimeFromTicks(ticks):
 def TimestampFromTicks(ticks):
     return Timestamp(*time.localtime(ticks)[:6])
 
-version_info = tuple([int(x) for x in version.split(".")])
+base_version = parse_version(version).base_version
+version_info = tuple([int(x) for x in base_version.split(".")])
 sqlite_version_info = tuple([int(x) for x in sqlite_version.split(".")])
 
 Binary = buffer

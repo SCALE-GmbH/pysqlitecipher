@@ -27,6 +27,7 @@
 #include "statement.h"
 #include "cursor.h"
 #include "prepare_protocol.h"
+#include "connection_vfs.h"
 #include "util.h"
 #include "sqlitecompat.h"
 
@@ -45,8 +46,12 @@
 #endif
 #endif
 
+#define UNATTACHED_THREAD_IDENT (-1)
+
 static int pysqlite_connection_set_isolation_level(pysqlite_Connection* self, PyObject* isolation_level);
 static void _pysqlite_drop_unused_cursor_references(pysqlite_Connection* self);
+static int pysqlite_connection_init_vfs(pysqlite_Connection *self);
+static int pysqlite_connection_cleanup_vfs(pysqlite_Connection *self);
 
 
 static void _sqlite3_result_error(sqlite3_context* ctx, const char* errmsg, int len)
@@ -109,13 +114,19 @@ int pysqlite_connection_init(pysqlite_Connection* self, PyObject* args, PyObject
             }
         }
 
+        rc = pysqlite_connection_init_vfs(self);
+        if (rc != 0)
+            return -1;
+
         Py_BEGIN_ALLOW_THREADS
-        rc = sqlite3_open(PyString_AsString(database_utf8), &self->db);
+        rc = sqlite3_open_v2(PyString_AsString(database_utf8), &self->db,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, self->db_vfs->zName);
         Py_END_ALLOW_THREADS
 
         Py_DECREF(database_utf8);
 
         if (rc != SQLITE_OK) {
+            pysqlite_connection_cleanup_vfs(self);
             _pysqlite_seterror(self->db, NULL);
             return -1;
         }
@@ -215,6 +226,28 @@ int pysqlite_connection_init(pysqlite_Connection* self, PyObject* args, PyObject
     return 0;
 }
 
+/* Initializes the associated VFS implementation for the connection instance
+   in self. This drops any VFS previously created for the same connection.
+   Returns -1 on failure, 0 on success. The actual error information is
+   set as a Python exception. */
+static int pysqlite_connection_init_vfs(pysqlite_Connection *self)
+{
+    pysqlite_connection_cleanup_vfs(self);
+    self->db_vfs = pysqlite_vfs_create((PyObject*)self);
+    self->minimum_lock_level = 0;
+    return self->db_vfs ? 0 : -1;
+}
+
+/* Destroys the VFS implementation associated with the connection in self.
+   This should only be called after the real database connection was
+   dropped. */
+static int pysqlite_connection_cleanup_vfs(pysqlite_Connection *self)
+{
+    pysqlite_vfs_destroy(self->db_vfs);
+    self->db_vfs = 0;
+    return 0;
+}
+
 /* Empty the entire statement cache of this connection */
 void pysqlite_flush_statement_cache(pysqlite_Connection* self)
 {
@@ -266,9 +299,22 @@ void pysqlite_do_all_statements(pysqlite_Connection* self, int action, int reset
     }
 }
 
+PyObject *
+pysqlite_connection_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    PyObject *instance = type->tp_alloc(type, 0);
+    pysqlite_Connection *self = (pysqlite_Connection*) instance;
+    self->in_weakreflist = NULL;
+    return instance;
+}
+
 void pysqlite_connection_dealloc(pysqlite_Connection* self)
 {
     PyObject* ret = NULL;
+
+    if (self->in_weakreflist) {
+        PyObject_ClearWeakRefs((PyObject *) self);
+    }
 
     Py_XDECREF(self->statement_cache);
 
@@ -277,6 +323,7 @@ void pysqlite_connection_dealloc(pysqlite_Connection* self)
         Py_BEGIN_ALLOW_THREADS
         sqlite3_close(self->db);
         Py_END_ALLOW_THREADS
+        pysqlite_connection_cleanup_vfs(self);
     } else if (self->apsw_connection) {
         ret = PyObject_CallMethod(self->apsw_connection, "close", "");
         Py_XDECREF(ret);
@@ -395,7 +442,12 @@ PyObject* pysqlite_connection_close(pysqlite_Connection* self, PyObject* args)
     PyObject* ret;
     int rc;
 
-    if (!pysqlite_check_thread(self)) {
+    /* If the connection is moved between threads using attach and detach and is
+       currently detached, then closing is allowed from any thread. Otherwise
+       this will hinder closing by garbage collection (like when using SQLAlchemy
+       QueuePool). */
+
+    if (self->thread_ident != UNATTACHED_THREAD_IDENT && !pysqlite_check_thread(self)) {
         return NULL;
     }
 
@@ -412,6 +464,7 @@ PyObject* pysqlite_connection_close(pysqlite_Connection* self, PyObject* args)
             Py_BEGIN_ALLOW_THREADS
             rc = sqlite3_close(self->db);
             Py_END_ALLOW_THREADS
+            pysqlite_connection_cleanup_vfs(self);
 
             if (rc != SQLITE_OK) {
                 _pysqlite_seterror(self->db, NULL);
@@ -1426,6 +1479,36 @@ finally:
     return retval;
 }
 
+static PyObject *
+pysqlite_connection_attach_thread(pysqlite_Connection* self, PyObject* args)
+{
+    long current_thread_ident = PyThread_get_thread_ident();
+
+    if (self->thread_ident != UNATTACHED_THREAD_IDENT) {
+    	return PyErr_Format(pysqlite_ProgrammingError,
+                "Can not attach SQLite connection to thread %ld, it is in use in thread %ld.",
+                current_thread_ident, self->thread_ident);
+    }
+
+    self->thread_ident = current_thread_ident;
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+pysqlite_connection_detach_thread(pysqlite_Connection* self, PyObject* args)
+{
+    /* It would be great to check here that the detaching thread is in fact the
+       owning thread. However, this will not work with the ConnectionPool of
+       SQLAlchemy, since dropping the last reference will return the connection
+       to the pool. The cleanup function can easily be called on the wrong thread
+       by the garbage collector. */
+
+    self->thread_ident = UNATTACHED_THREAD_IDENT;
+    Py_RETURN_NONE;
+}
+
+
+
 /* Function author: Paul Kippes <kippesp@gmail.com>
  * Class method of Connection to call the Python function _iterdump
  * of the sqlite3 module.
@@ -1631,6 +1714,11 @@ static PyMethodDef connection_methods[] = {
         PyDoc_STR("Abort any pending database operation. Non-standard.")},
     {"iterdump", (PyCFunction)pysqlite_connection_iterdump, METH_NOARGS,
         PyDoc_STR("Returns iterator to the dump of the database in an SQL text format. Non-standard.")},
+    {"detach_thread", (PyCFunction)pysqlite_connection_detach_thread, METH_NOARGS,
+        PyDoc_STR("Detaches the connection from the current thread, rendering it unusable until "
+                  "attach_thread is called. Non-standard.")},
+    {"attach_thread", (PyCFunction)pysqlite_connection_attach_thread, METH_NOARGS,
+        PyDoc_STR("Attaches the connection to the current thread, making it usable only from here. Non-standard.")},
     {"__enter__", (PyCFunction)pysqlite_connection_enter, METH_NOARGS,
         PyDoc_STR("For context manager. Non-standard.")},
     {"__exit__", (PyCFunction)pysqlite_connection_exit, METH_VARARGS,
@@ -1652,6 +1740,7 @@ static struct PyMemberDef connection_members[] =
     {"NotSupportedError", T_OBJECT, offsetof(pysqlite_Connection, NotSupportedError), RO},
     {"row_factory", T_OBJECT, offsetof(pysqlite_Connection, row_factory)},
     {"text_factory", T_OBJECT, offsetof(pysqlite_Connection, text_factory)},
+    {"minimum_lock_level", T_INT, offsetof(pysqlite_Connection, minimum_lock_level)},
     {NULL}
 };
 
@@ -1680,7 +1769,7 @@ PyTypeObject pysqlite_ConnectionType = {
         0,                                              /* tp_traverse */
         0,                                              /* tp_clear */
         0,                                              /* tp_richcompare */
-        0,                                              /* tp_weaklistoffset */
+        offsetof(pysqlite_Connection, in_weakreflist),  /* tp_weaklistoffset */
         0,                                              /* tp_iter */
         0,                                              /* tp_iternext */
         connection_methods,                             /* tp_methods */
@@ -1693,12 +1782,11 @@ PyTypeObject pysqlite_ConnectionType = {
         0,                                              /* tp_dictoffset */
         (initproc)pysqlite_connection_init,             /* tp_init */
         0,                                              /* tp_alloc */
-        0,                                              /* tp_new */
+        (newfunc)pysqlite_connection_new,               /* tp_new */
         0                                               /* tp_free */
 };
 
 extern int pysqlite_connection_setup_types(void)
 {
-    pysqlite_ConnectionType.tp_new = PyType_GenericNew;
     return PyType_Ready(&pysqlite_ConnectionType);
 }

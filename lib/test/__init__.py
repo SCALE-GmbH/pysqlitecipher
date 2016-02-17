@@ -33,12 +33,13 @@ if os.path.exists("extended_setup.py"):
     sys.exit(1)
 
 from pysqlite2.test import dbapi, types, userfunctions, factory, transactions,\
-    hooks, regression, dump
+    hooks, regression, dump, lock_manager, vfs
 from pysqlite2 import dbapi2 as sqlite
 
 def suite():
-    tests = [dbapi.suite(), types.suite(), userfunctions.suite(),
-      factory.suite(), transactions.suite(), hooks.suite(), regression.suite(), dump.suite()]
+    tests = [dbapi.suite(), types.suite(), userfunctions.suite(), lock_manager.suite(),
+      factory.suite(), transactions.suite(), hooks.suite(), regression.suite(), dump.suite(),
+      vfs.suite()]
     if sys.version_info >= (2, 5, 0):
         from pysqlite2.test.py25 import py25tests
         tests.append(py25tests.suite())
@@ -46,5 +47,7 @@ def suite():
     return unittest.TestSuite(tuple(tests))
 
 def test():
+    from pysqlite2.lock_manager import DefaultLockManager, set_lock_manager
+    set_lock_manager(DefaultLockManager())
     runner = unittest.TextTestRunner()
     runner.run(suite())

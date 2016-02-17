@@ -37,6 +37,12 @@ typedef struct
     PyObject_HEAD
     sqlite3* db;
 
+    /* SQLite 3 VFS instance specifically created for the database in db. */
+    sqlite3_vfs* db_vfs;
+
+    /* Minimum lock level to use for VFS operations. */
+    int minimum_lock_level;
+
     /* 1 if we are currently within a transaction, i. e. if a BEGIN has been
      * issued */
     int inTransaction;
@@ -115,6 +121,8 @@ typedef struct
     PyObject* InternalError;
     PyObject* ProgrammingError;
     PyObject* NotSupportedError;
+
+    PyObject* in_weakreflist; /* List of weak references */
 } pysqlite_Connection;
 
 extern PyTypeObject pysqlite_ConnectionType;

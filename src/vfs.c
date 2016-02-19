@@ -2,6 +2,11 @@
 #include "module.h"
 #include "vfs.h"
 
+#define CHECK_VFSFILE_VALID(self) do { \
+        if (!(self)->real_file) \
+            return PyErr_Format(PyExc_RuntimeError, "VFSFile: operation on closed file"); \
+    } while(0)
+
 PyTypeObject pysqlite_VFSType;
 PyTypeObject pysqlite_VFSFileType;
 
@@ -199,7 +204,7 @@ PyDoc_STR("SQLite VFS (virtual file system) file object.");
 static void
 vfs_file_dealloc(pysqlite_VFSFile *self)
 {
-    int status;
+    int status = SQLITE_OK;
     sqlite3_file *real_file = self->real_file;
     self->real_file = NULL;
 
@@ -219,12 +224,37 @@ vfs_file_dealloc(pysqlite_VFSFile *self)
     }
 }
 
+static char vfs_file_lock_doc[] = PyDoc_STR(
+"VFSFile.lock(level: int) -> None\n\
+Increases the lock on the file, raising an exception on error.");
+
+/*!
+    Wraps the xLock method of an sqlite3_file as VFSFile.lock.
+*/
+static PyObject *
+vfs_file_lock(pysqlite_VFSFile *self, PyObject *args, PyObject *kwds)
+{
+    int level = 0, status = 0;
+    sqlite3_file *real_file = self->real_file;
+
+    if (!PyArg_ParseTuple(args, "i:VFSFile.lock", &level))
+        return NULL;
+
+    CHECK_VFSFILE_VALID(self);
+
+    Py_BEGIN_ALLOW_THREADS
+    status = real_file->pMethods->xLock(real_file, level);
+    Py_END_ALLOW_THREADS
+
+    if (status != SQLITE_OK) {
+        PyErr_SetString(pysqlite_DatabaseError, sqlite3_errstr(status));
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
 
 static PyMethodDef vfs_file_methods[] = {
-#if 0
-    {"backup", (PyCFunction)pysqlite_connection_backup, METH_VARARGS|METH_KEYWORDS,
-        PyDoc_STR("Backup database.")},
-#endif
+    {"lock", (PyCFunction) vfs_file_lock, METH_VARARGS, vfs_file_lock_doc},
     {NULL}
 };
 
@@ -285,7 +315,6 @@ set_item_int(PyObject *target, const char *name, long value)
     if (py_value)
         status = PyMapping_SetItemString(target, (char *) name, py_value);
 
-out:
     Py_XDECREF(py_value);
     return status;
 }

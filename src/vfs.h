@@ -12,8 +12,20 @@ typedef struct
     PyObject_HEAD
 
     /* Pointer to the wrapped VFS implementation. */
-    sqlite3_vfs* real_vfs;
+    sqlite3_vfs *real_vfs;
 } pysqlite_VFS;
+
+
+typedef struct
+{
+    PyObject_HEAD
+
+    /* File name, must be released via PyMem_Free */
+    char *filename;
+
+    /* Pointer to the wrapped file (free via PyMem_Free) */
+    sqlite3_file *real_file;
+} pysqlite_VFSFile;
 
 
 int pysqlite_vfs_register(PyObject *module);

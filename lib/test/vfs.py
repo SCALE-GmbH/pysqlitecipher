@@ -22,6 +22,7 @@
 # 3. This notice may not be removed or altered from any source distribution.
 
 import sys
+import tempfile
 import os, unittest
 import pysqlite2.dbapi2 as sqlite
 
@@ -30,15 +31,38 @@ class VFSTests(unittest.TestCase):
 
     def setUp(self):
         self.vfs = sqlite.VFS()
+        fd, self.temporary_file = tempfile.mkstemp()
+        os.close(fd)
 
     def tearDown(self):
         self.vfs = None
+        os.remove(self.temporary_file)
 
     def CheckVersionIsInt(self):
         self.assertIsInstance(self.vfs.version, int)
 
     def CheckNameIsString(self):
         self.assertIsInstance(self.vfs.name, basestring)
+
+    def CheckSharedLock(self):
+        """Two handles to the same file can be locked in shared mode at the same time."""
+        file_a = self.vfs.open(self.temporary_file, self.vfs.OPEN_READWRITE | self.vfs.OPEN_MAIN_DB)
+        file_a.lock(file_a.LOCK_SHARED)
+
+        file_b = self.vfs.open(self.temporary_file, self.vfs.OPEN_READWRITE | self.vfs.OPEN_MAIN_DB)
+        file_b.lock(file_b.LOCK_SHARED)
+
+    def CheckSharedBlocksExclusiveLock(self):
+        file_a = self.vfs.open(self.temporary_file, self.vfs.OPEN_READWRITE | self.vfs.OPEN_MAIN_DB)
+        file_a.lock(file_a.LOCK_SHARED)
+
+        try:
+            file_b = self.vfs.open(self.temporary_file, self.vfs.OPEN_READWRITE | self.vfs.OPEN_MAIN_DB)
+            file_b.lock(file_b.LOCK_EXCLUSIVE)
+            self.fail("lock exclusive should have failed")
+        except sqlite.DatabaseError, e:
+            if not "database is locked" in str(e):
+                raise
 
 
 def suite():

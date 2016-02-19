@@ -29,6 +29,7 @@
 #include "microprotocols.h"
 #include "row.h"
 #include "connection_vfs.h"
+#include "vfs.h"
 
 #ifdef PYSQLITE_EXPERIMENTAL
 #include "backup.h"

@@ -1,0 +1,13 @@
+PROJECT_NAME = "_pysqlite2 extension"
+
+INPUT = src
+RECURSIVE = YES
+
+QT_AUTOBRIEF           = YES
+OPTIMIZE_OUTPUT_FOR_C  = YES
+
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE	       = YES
+EXTRACT_STATIC         = YES
+
+SOURCE_BROWSER         = YES

@@ -64,6 +64,15 @@ class VFSTests(unittest.TestCase):
             if not "database is locked" in str(e):
                 raise
 
+    def CheckClosingDropsLock(self):
+        """When a file is closed/dropped, the locks should get released."""
+        file_a = self.vfs.open(self.temporary_file, self.vfs.OPEN_READWRITE | self.vfs.OPEN_MAIN_DB)
+        file_a.lock(file_a.LOCK_EXCLUSIVE)
+        file_a = None  # -> closes file, no close() method so far
+
+        file_b = self.vfs.open(self.temporary_file, self.vfs.OPEN_READWRITE | self.vfs.OPEN_MAIN_DB)
+        file_b.lock(file_b.LOCK_EXCLUSIVE)
+
 
 def suite():
     default_suite = unittest.makeSuite(VFSTests, "Check")

@@ -71,6 +71,14 @@ class LockManager(object):
 
     LEVEL_NAMES = LEVEL_NAMES
 
+    # Set this to true if you want to disable the safety net in the extension
+    # module which calls lockfunc just to be sure. Setting this True gives you
+    # more freedom (as setting the lock in a different process) but if the
+    # lock manager does not work correctly this will lead to database corruption.
+    # You have been warned!
+
+    DISABLE_SAFETY = False
+
     def lock(self, lockfunc, filename, level, client):
         """
         Lock the database file given in *filename* to the locking level given

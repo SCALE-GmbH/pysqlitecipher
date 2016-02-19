@@ -158,7 +158,7 @@ def determine_version(module_h_path):
 def main():
     setup_args = dict(
         name="pysqlitecipher",
-        version=determine_version(os.path.join("src", "module.h")) + "+scale10",
+        version=determine_version(os.path.join("src", "module.h")) + "+scale11",
         description="DB-API 2.0 interface for both SQLite 3.x and SQLCipher",
         long_description=LONG_DESCRIPTION,
         author="Gerhard Haering",

@@ -356,6 +356,28 @@ static int vfs_add_open_constants(PyObject *target)
 #   undef EXPORT_CONSTANT
 }
 
+/*!
+   Export SQLITE_LOCK... constants to the \a target dictionary/mapping.
+   \param target Python mapping object to add attributes to
+   \return -1 on failure (Python error set), 0 otherwise
+ */
+static int vfs_file_add_lock_constants(PyObject *target)
+{
+#   define EXPORT_CONSTANT(name) do { \
+        if (set_item_int(target, #name + 7, name)) \
+            return -1; \
+    } while(0)
+
+    EXPORT_CONSTANT(SQLITE_LOCK_NONE);
+    EXPORT_CONSTANT(SQLITE_LOCK_SHARED);
+    EXPORT_CONSTANT(SQLITE_LOCK_RESERVED);
+    EXPORT_CONSTANT(SQLITE_LOCK_PENDING);
+    EXPORT_CONSTANT(SQLITE_LOCK_EXCLUSIVE);
+
+    return 0;
+#   undef EXPORT_CONSTANT
+}
+
 
 int pysqlite_vfs_register(PyObject *module)
 {
@@ -368,6 +390,10 @@ int pysqlite_vfs_register(PyObject *module)
         return status;
 
     status = PyType_Ready(&pysqlite_VFSFileType);
+    if (status < 0)
+        return status;
+
+    status = vfs_file_add_lock_constants(pysqlite_VFSFileType.tp_dict);
     if (status < 0)
         return status;
 

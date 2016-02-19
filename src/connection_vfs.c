@@ -33,6 +33,9 @@ typedef struct _my_io_methods {
     /* Exception type for deadlock detected by lock manager. */
     PyObject *lock_manager_DeadlockError;
 
+    /* Flag for safety precaution to forward to original lock methods. */
+    int safety_enable_flag;
+
     /* Pointers to original methods which we override. */
     int (*orig_xClose)(sqlite3_file*);
     int (*orig_xLock)(sqlite3_file*, int);
@@ -194,6 +197,24 @@ static int wrapped_xOpen(
         goto error_out;
     }
 
+    /* Set safety_enable_flag to 0 if LockManager.DISABLE_SAFETY is true, 1 otherwise. */
+    methods->safety_enable_flag = 1;
+    if (PyObject_HasAttrString(methods->lock_manager, "DISABLE_SAFETY")) {
+        int disable_value = 0;
+        PyObject *safety_py = PyObject_GetAttrString(methods->lock_manager, "DISABLE_SAFETY");
+        if (!safety_py) {
+            rc = SQLITE_INTERNAL;
+            goto error_out;
+        }
+        disable_value = PyObject_IsTrue(safety_py);
+        Py_DECREF(safety_py);
+        if (disable_value == -1) {
+            rc = SQLITE_INTERNAL;
+            goto error_out;
+        }
+        methods->safety_enable_flag = !disable_value;
+    }
+
     Py_INCREF(self->weak_connection);
     methods->weak_connection = self->weak_connection;
 
@@ -267,9 +288,16 @@ static int wrapped_xLock(sqlite3_file *file, int lock_mode)
 
            This does not have any effect if the lock manager is implemented
            correctly, but if it isn't this will be either fixed here or
-           flagged as an error. */
+           flagged as an error.
+
+           There is one exception to this rule: to be able to keep the locks in
+           a different process, this safety mechanism can be disabled by a
+           LockManager implementation. */
 
         my_io_methods *methods = (my_io_methods *) file->pMethods;
+        if (!methods->safety_enable_flag)
+            return rc;
+
         rc = methods->orig_xLock(file, lock_mode);
 
         /* If orig_xLock returned an error, this means that the lock manager

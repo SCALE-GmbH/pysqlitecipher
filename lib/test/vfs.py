@@ -73,6 +73,24 @@ class VFSTests(unittest.TestCase):
         file_b = self.vfs.open(self.temporary_file, self.vfs.OPEN_READWRITE | self.vfs.OPEN_MAIN_DB)
         file_b.lock(file_b.LOCK_EXCLUSIVE)
 
+    def CheckLockUnlockLoop(self):
+        """Unlocking a file should make it available again for another client."""
+        file_a = self.vfs.open(self.temporary_file, self.vfs.OPEN_READWRITE | self.vfs.OPEN_MAIN_DB)
+        file_b = self.vfs.open(self.temporary_file, self.vfs.OPEN_READWRITE | self.vfs.OPEN_MAIN_DB)
+        levels = [file_a.LOCK_NONE, file_a.LOCK_SHARED, file_a.LOCK_RESERVED, file_a.LOCK_EXCLUSIVE]
+
+        for n in range(1):
+            # Seriously, we have to step the lock levels, at least for unlock to work.
+            for level in levels[1:]:
+                file_a.lock(level)
+            for level in reversed(levels[:-1]):
+                file_a.unlock(level)
+
+            for level in levels[1:]:
+                file_b.lock(level)
+            for level in reversed(levels[:-1]):
+                file_b.unlock(level)
+
 
 def suite():
     default_suite = unittest.makeSuite(VFSTests, "Check")

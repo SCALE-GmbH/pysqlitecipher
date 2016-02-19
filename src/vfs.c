@@ -253,8 +253,38 @@ vfs_file_lock(pysqlite_VFSFile *self, PyObject *args, PyObject *kwds)
     Py_RETURN_NONE;
 }
 
+static char vfs_file_unlock_doc[] = PyDoc_STR(
+"VFSFile.unlock(level: int) -> None\n\
+Decreases the lock level on the file, raising an exception on error.");
+
+/*!
+    Wraps the xUnlock method of an sqlite3_file as VFSFile.unlock.
+*/
+static PyObject *
+vfs_file_unlock(pysqlite_VFSFile *self, PyObject *args, PyObject *kwds)
+{
+    int level = 0, status = 0;
+    sqlite3_file *real_file = self->real_file;
+
+    if (!PyArg_ParseTuple(args, "i:VFSFile.unlock", &level))
+        return NULL;
+
+    CHECK_VFSFILE_VALID(self);
+
+    Py_BEGIN_ALLOW_THREADS
+    status = real_file->pMethods->xUnlock(real_file, level);
+    Py_END_ALLOW_THREADS
+
+    if (status != SQLITE_OK) {
+        PyErr_SetString(pysqlite_DatabaseError, sqlite3_errstr(status));
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef vfs_file_methods[] = {
     {"lock", (PyCFunction) vfs_file_lock, METH_VARARGS, vfs_file_lock_doc},
+    {"unlock", (PyCFunction) vfs_file_unlock, METH_VARARGS, vfs_file_unlock_doc},
     {NULL}
 };
 

@@ -7,8 +7,8 @@
             return PyErr_Format(PyExc_RuntimeError, "VFSFile: operation on closed file"); \
     } while(0)
 
-PyTypeObject pysqlite_VFSType;
-PyTypeObject pysqlite_VFSFileType;
+static PyTypeObject pysqlite_VFSType;
+static PyTypeObject pysqlite_VFSFileType;
 
 static char vfs_doc[] =
 PyDoc_STR("SQLite VFS (virtual file system) object.");
@@ -105,10 +105,6 @@ static PyGetSetDef vfs_getset[] = {
 
 static PyMethodDef vfs_methods[] = {
     {"open", (PyCFunction) vfs_open, METH_VARARGS|METH_KEYWORDS, vfs_open_doc},
-#if 0
-    {"backup", (PyCFunction)pysqlite_connection_backup, METH_VARARGS|METH_KEYWORDS,
-        PyDoc_STR("Backup database.")},
-#endif
     {NULL}
 };
 
@@ -152,7 +148,7 @@ vfs_new(PyTypeObject *subtype, PyObject *args, PyObject *kwds)
 }
 
 
-PyTypeObject pysqlite_VFSType = {
+static PyTypeObject pysqlite_VFSType = {
         PyVarObject_HEAD_INIT(NULL, 0)
         MODULE_NAME ".VFS",                             /* tp_name */
         sizeof(pysqlite_VFS),                           /* tp_basicsize */
@@ -288,7 +284,7 @@ static PyMethodDef vfs_file_methods[] = {
     {NULL}
 };
 
-PyTypeObject pysqlite_VFSFileType = {
+static PyTypeObject pysqlite_VFSFileType = {
         PyVarObject_HEAD_INIT(NULL, 0)
         MODULE_NAME ".VFSFile",                         /* tp_name */
         sizeof(pysqlite_VFSFile),                       /* tp_basicsize */
@@ -350,7 +346,7 @@ set_item_int(PyObject *target, const char *name, long value)
 }
 
 /*!
-   Export SQLITE_OPEN_... constants to the \a target dictionary/mapping.
+   Export SQLITE_OPEN_* constants to the \a target dictionary/mapping.
    \param target Python mapping object to add attributes to
    \return -1 on failure (Python error set), 0 otherwise
  */
@@ -387,7 +383,7 @@ static int vfs_add_open_constants(PyObject *target)
 }
 
 /*!
-   Export SQLITE_LOCK... constants to the \a target dictionary/mapping.
+   Export SQLITE_LOCK_* constants to the \a target dictionary/mapping.
    \param target Python mapping object to add attributes to
    \return -1 on failure (Python error set), 0 otherwise
  */
